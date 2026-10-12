@@ -18,6 +18,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -48,6 +49,20 @@ def empty_tokens() -> dict:
     return {k: 0 for k in TOKEN_KEYS}
 
 
+# 子命令别名(第一项用于补全展示,别名让人少敲字)
+SUBCOMMANDS = {
+    "list": ["ls", "l"],
+    "search": ["s", "grep"],
+    "show": ["o", "cat"],
+    "pick": ["f"],
+    "export": ["e"],
+    "stats": ["st", "stat"],
+    "rm": ["d", "del"],
+    "purge": ["p"],
+}
+KNOWN_COMMANDS = set(SUBCOMMANDS) | {a for al in SUBCOMMANDS.values() for a in al}
+
+
 # ---------------------------------------------------------------- 小工具
 
 
@@ -56,9 +71,12 @@ def die(msg: str, code: int = 1):
     sys.exit(code)
 
 
+ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
 def dwidth(s: str) -> int:
-    """显示宽度:CJK 全角算 2。"""
-    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+    """显示宽度:CJK 全角算 2。先剥掉 ANSI 颜色码,否则对齐会错。"""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in ANSI_RE.sub("", s))
 
 
 def pad(s: str, width: int) -> str:
@@ -658,12 +676,13 @@ def cmd_list(args, store: SessionStore):
         print("没有匹配的会话")
         return
     idx = store.index_map()
+    on = color_enabled()
     rows = [["#", "时间", "项目", "标题", "消息", "大小", "tok"]]
     for s in sessions:
         title = s.title + ("  [已归档]" if s.archived else "")
         rows.append(
             [
-                str(idx.get(str(s.path), "?")),
+                paint(str(idx.get(str(s.path), "?")), "1;33", on),  # 序号高亮,便于复制去 show/rm
                 fmt_time(s.end or s.start),
                 truncate(s.short_project, 22),
                 truncate(title, 34),
@@ -690,6 +709,7 @@ def cmd_search(args, store: SessionStore):
         pat = re.compile(re.escape(args.query), flags)
 
     ctx = args.context
+    on = color_enabled()
     cap = 10**9 if args.grep else args.max_hits
     hits = []  # (session, 真实命中数, 用于展示的片段)
     for s in sessions:
@@ -699,7 +719,7 @@ def cmd_search(args, store: SessionStore):
             for m in pat.finditer(text):
                 count += 1
                 if len(snippets) < cap:
-                    snippets.append((kind, _snippet(text, m, ctx)))
+                    snippets.append((kind, _snippet(text, m, ctx, pat, on)))
         if count:
             hits.append((s, count, snippets))
 
@@ -718,7 +738,6 @@ def cmd_search(args, store: SessionStore):
         print("没有命中")
         return
 
-    on = color_enabled()
     total = sum(c for _, c, _ in hits)
     if args.grep:
         for s, _, sn in hits:
@@ -739,25 +758,109 @@ def cmd_search(args, store: SessionStore):
     print(f"{total} 处命中,分布在 {len(hits)} 个会话")
 
 
-def _snippet(text: str, m, ctx: int) -> str:
+def _snippet(text: str, m, ctx: int, pat=None, on: bool = False) -> str:
     a = max(0, m.start() - ctx)
     b = min(len(text), m.end() + ctx)
     pre = "…" if a > 0 else ""
     post = "…" if b < len(text) else ""
-    return pre + " ".join(text[a:b].split()) + post
+    out = pre + " ".join(text[a:b].split()) + post
+    if on and pat is not None:
+        mm = pat.search(out)
+        if mm and mm.end() > mm.start():
+            out = out[: mm.start()] + paint(out[mm.start(): mm.end()], "1;31", True) + out[mm.end():]
+    return out
+
+
+def _resume_session(s: Session):
+    cwd = s.project if os.path.isdir(s.project) else None
+    print(f"→ claude --resume {s.sid}  (cwd: {cwd or '未找到,用当前目录'})")
+    try:
+        subprocess.run(["claude", "--resume", s.sid], cwd=cwd)
+    except FileNotFoundError:
+        die("找不到 claude 命令")
 
 
 def cmd_show(args, store: SessionStore):
     s = resolve(args.ref, store)
     if args.resume:
-        cwd = s.project if os.path.isdir(s.project) else None
-        print(f"→ claude --resume {s.sid}  (cwd: {cwd or '未找到,用当前目录'})")
-        subprocess.run(["claude", "--resume", s.sid], cwd=cwd)
+        _resume_session(s)
         return
     if args.json:
         print(export_json(s, args.full))
         return
     emit(render_session(s, args.full, color_enabled()) + "\n", args.pager)
+    # 读完顺手问一句要不要续聊(仅交互终端)
+    if not args.pager and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            ans = input("\n要续聊这个会话吗?[y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if ans in ("y", "yes"):
+            _resume_session(s)
+
+
+def cmd_pick(args, store: SessionStore):
+    """fzf 交互选择:Enter 打开 / Ctrl-R 续聊 / Ctrl-D 预览删除。"""
+    if not sys.stdin.isatty():
+        die("cgr pick 需要在交互终端下运行(fzf 需要 tty);非交互场景请用 list / search")
+    sessions = apply_filters(store.sessions(), args)
+    if args.limit:
+        sessions = sessions[: args.limit]
+    if not sessions:
+        print("没有会话")
+        return
+    fzf = shutil.which("fzf")
+    if not fzf:
+        die("没装 fzf —— brew install fzf")
+    idx = store.index_map()
+    lines = []
+    for s in sessions:
+        tag = " [已归档]" if s.archived else ""
+        lines.append(
+            "\t".join(
+                [
+                    str(idx.get(str(s.path), "?")),
+                    fmt_time(s.end or s.start),
+                    truncate(s.short_project, 22),
+                    s.title + tag,
+                    f"{s.prompts}+{s.replies}",
+                ]
+            )
+        )
+    exe, script = sys.executable, os.path.abspath(__file__)
+    extra = ["-a"] if args.archived else []
+    sub = subprocess.run(
+        [
+            fzf,
+            "--delimiter=\t",
+            "--with-nth=2,4,3,5",
+            "--nth=4,3,5",
+            "--preview", f"{shlex.quote(exe)} {shlex.quote(script)} show {{1}}",
+            "--preview-window=right:60%:wrap",
+            "--expect=ctrl-r,ctrl-d",
+            "--header=Enter 打开 · Ctrl-R 续聊 · Ctrl-D 预览删除",
+            "--height=90%",
+        ],
+        input="\n".join(lines),
+        text=True,
+        capture_output=True,
+    )
+    if sub.returncode != 0 or not sub.stdout.strip():
+        return
+    out = sub.stdout.splitlines()
+    key = out[0] if out else ""
+    sel = out[1] if len(out) > 1 else ""
+    if not sel.strip():
+        return
+    ref = sel.split("\t")[0]
+    if key == "ctrl-r":
+        cmd = ["show", ref, "-r"]
+    elif key == "ctrl-d":
+        cmd = ["rm", ref]
+    else:
+        cmd = ["show", ref]
+    subprocess.run([exe, script, *cmd, *extra])
 
 
 def cmd_export(args, store: SessionStore):
@@ -977,13 +1080,16 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("-j", "--json", action="store_true", help="机器可读输出")
     common.add_argument("-a", "--archived", action="store_true", help="把备份也纳入数据源")
 
-    p = argparse.ArgumentParser(prog="chatmgr", description="Claude Code 聊天记录管理(不带子命令默认 list)")
-    sub = p.add_subparsers(dest="cmd", metavar="<命令>")
+    p = argparse.ArgumentParser(
+        prog="cgr",
+        description="Claude Code 聊天记录管理。不带子命令=列表;cgr 3=打开第3个;cgr 关键词=搜索。",
+    )
+    sub = p.add_subparsers(dest="cmd", metavar="<命令/数字/关键词>")
 
-    sp = sub.add_parser("list", parents=[common], help="列出会话")
+    sp = sub.add_parser("list", aliases=SUBCOMMANDS["list"], parents=[common], help="列出会话")
     sp.set_defaults(func=cmd_list)
 
-    sp = sub.add_parser("search", parents=[common], help="搜索对话内容")
+    sp = sub.add_parser("search", aliases=SUBCOMMANDS["search"], parents=[common], help="搜索对话内容")
     sp.add_argument("query")
     sp.add_argument("-i", "--ignore-case", dest="ignore_case", action="store_true",
                     default=True, help="忽略大小写(默认)")
@@ -997,14 +1103,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-hits", type=int, default=5, metavar="N", help="每个会话最多显示几处(默认 5)")
     sp.set_defaults(func=cmd_search)
 
-    sp = sub.add_parser("show", parents=[common], help="阅读一个会话")
+    sp = sub.add_parser("show", aliases=SUBCOMMANDS["show"], parents=[common], help="阅读一个会话")
     sp.add_argument("ref", help="id 前缀 / 列表序号 / 标题")
     sp.add_argument("-f", "--full", action="store_true", help="连 thinking 和工具返回一起显示")
     sp.add_argument("--pager", action="store_true", help="用 less 分页")
     sp.add_argument("-r", "--resume", action="store_true", help="直接 claude --resume 此会话")
     sp.set_defaults(func=cmd_show)
 
-    sp = sub.add_parser("export", parents=[common], help="导出会话")
+    sp = sub.add_parser("pick", aliases=SUBCOMMANDS["pick"], parents=[common],
+                        help="fzf 交互选择:Enter 打开 / Ctrl-R 续聊 / Ctrl-D 预览删除")
+    sp.set_defaults(func=cmd_pick)
+
+    sp = sub.add_parser("export", aliases=SUBCOMMANDS["export"], parents=[common], help="导出会话")
     sp.add_argument("ref")
     sp.add_argument("-f", "--format", choices=["md", "txt", "json"], default="md")
     sp.add_argument("-o", "--out", metavar="FILE", help="输出文件(不给则打印到终端)")
@@ -1012,16 +1122,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--pager", action="store_true")
     sp.set_defaults(func=cmd_export)
 
-    sp = sub.add_parser("stats", parents=[common], help="统计用量")
+    sp = sub.add_parser("stats", aliases=SUBCOMMANDS["stats"], parents=[common], help="统计用量")
     sp.add_argument("-b", "--by", choices=["day", "project", "model", "tool"], help="按维度汇总")
     sp.set_defaults(func=cmd_stats)
 
-    sp = sub.add_parser("rm", parents=[common], help="删除会话(默认 dry-run,删前自动备份)")
+    sp = sub.add_parser("rm", aliases=SUBCOMMANDS["rm"], parents=[common], help="删除会话(默认 dry-run,删前自动备份)")
     sp.add_argument("refs", nargs="+")
     sp.add_argument("-f", "--force", action="store_true", help="真的删(不给则只预览)")
     sp.set_defaults(func=cmd_rm)
 
-    sp = sub.add_parser("purge", parents=[common], help="清除备份(默认 dry-run)")
+    sp = sub.add_parser("purge", aliases=SUBCOMMANDS["purge"], parents=[common], help="清除备份(默认 dry-run)")
     sp.add_argument("refs", nargs="*", help="指定会话 id 前缀(不给则全部)")
     sp.add_argument("-n", "--older-than", type=int, metavar="DAYS", help="只清 N 天前的备份")
     sp.add_argument("-f", "--force", action="store_true", help="真的删(不给则只预览)")
@@ -1032,16 +1142,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None):
     raw = list(sys.argv[1:] if argv is None else argv)
-    # 不带子命令(或直接跟选项)时,默认走 list
+    # 分派:空→list;选项开头→list;纯数字→show;其他词→search;已知命令/别名→原样
     if not raw:
         raw = ["list"]
-    elif raw[0].startswith("-") and raw[0] not in ("-h", "--help"):
+    elif raw[0] in ("-h", "--help"):
+        pass
+    elif raw[0].startswith("-"):
         raw = ["list"] + raw
+    elif raw[0] not in KNOWN_COMMANDS:
+        raw = (["show"] if raw[0].isdigit() else ["search"]) + raw
 
     args = build_parser().parse_args(raw)
     if not getattr(args, "func", None):
         args = build_parser().parse_args(["list"])
-    if not projects_dir().is_dir() and args.cmd != "purge":
+    if not projects_dir().is_dir() and args.func is not cmd_purge:
         die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")
     store = SessionStore(include_archived=getattr(args, "archived", False))
     try:
