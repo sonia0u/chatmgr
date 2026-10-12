@@ -4,18 +4,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-`chatmgr` —— 管理 `~/.claude/projects/*/*.jsonl` 聊天记录的命令行工具。纯 Python 标准库、单文件、无依赖、无构建步骤。
+`cgr`(= `chatmgr`)—— 管理 `~/.claude/projects/*/*.jsonl` 聊天记录的命令行工具。纯 Python 标准库、单文件、无依赖、无构建步骤。
+
+## 标准文件路径
+
+**仓库内**
+
+| 路径 | 说明 |
+|---|---|
+| `chatmgr.py` | 工具本体,可执行,仓库根 |
+| `CLAUDE.md` | 本指引(逐条维护,改约定要同步这里) |
+| `docs/prd.md` | 需求 / 功能规格 / 已确认的产品决策 |
+| `docs/usage.md` | 命令手册(每个子命令的详细用法) |
+| `docs/images/` | 截图、界面参考图、流程图 |
+| `docs/api/` | API 文档、接口约定、第三方对接说明 |
+
+**仓库外(运行时会访问)**
+
+| 路径 | 说明 |
+|---|---|
+| `~/.local/bin/cgr`(及 `chatmgr`) | 软链 → 仓库内 `chatmgr.py`,让 `cgr` / `chatmgr` 可从任意目录运行 |
+| `~/.claude/projects/<项目>/<会话id>.jsonl` | **数据源(只读)**;子 agent 在 `<会话id>/subagents/` |
+| `~/.claude/history.jsonl` | 用户的 prompt 流水(本工具暂未使用) |
+| `~/.claude/settings.json` | 环境配置,含 `cleanupPeriodDays`;**不属于本仓库** |
+| `~/claude-archive/<项目>/<会话id>.jsonl` | 归档/备份,同级有 `manifest.json`;**仓库外**,不入 git |
+| `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` | 覆盖上面两个根目录(测试时用,见「安全测试」) |
 
 ## 常用命令
 
 ```bash
-python3 chatmgr.py <命令>          # 或:chatmgr <命令>(~/.local/bin/chatmgr 已软链到本文件)
-python3 chatmgr.py                 # 不带子命令默认走 list
-python3 -m py_compile chatmgr.py   # 语法检查(本项目没有测试套件)
-python3 chatmgr.py <命令> -h       # 看某子命令的全部参数
+cgr <命令>                          # ~/.local/bin/cgr 已软链到本文件
+python3 chatmgr.py <命令>           # 或直接跑
+cgr                                 # 不带子命令=list;cgr 3=show 3;cgr 关键词=search
+python3 -m py_compile chatmgr.py    # 语法检查(本项目没有测试套件)
+cgr <命令> -h                        # 看某子命令的全部参数
 ```
 
-子命令:`list / search / show / export / stats / rm / purge`。
+子命令:`list / search / show / pick / export / stats / rm / purge`,各有常用别名(见下)。
+
+**裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`;其他词 → `search`;已知命令/别名 → 原样。
 
 **验证靠手动跑**,没有自动化测试。改完后至少跑一遍 `list`(确认会话数与 `find ~/.claude/projects -maxdepth 2 -name '*.jsonl' | wc -l` 一致)和目标子命令。
 
@@ -61,9 +88,35 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 ## 参数与输出约定
 
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
+- 命令别名集中在模块常量 `SUBCOMMANDS`(`list`→`ls`/`l`,`search`→`s`/`grep`,`show`→`o`/`cat`,`pick`→`f`,`export`→`e`,`stats`→`st`/`stat`,`rm`→`d`/`del`,`purge`→`p`);`KNOWN_COMMANDS` 供裸参数分派判断。加别名改这一处即可。
 - 全局短选项在所有子命令保持一致:`-p`(project) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived)。
-- `search` **默认忽略大小写**,`-c` 才区分。
+- `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。
+- `list` 的序号列高亮(便于直接拿来 `cgr 3`)。
+- `pick` 用 `fzf`(缺失时报错退出),选中后**委托自身子命令**(`show` / `show -r` / `rm`)。
+- `show` 在交互终端下读完会问一句"要续聊吗",确认即 `claude --resume`;非 TTY / `--json` / `--pager` 时不问。
 - 输出:尊重 `NO_COLOR`,非 TTY 不上色;默认不分页(便于管道给 `less`/`grep`),`--pager` 才走 `less`;长行不硬截断,交给终端换行。
+
+## 工作说明
+
+改这个仓库时的固定动作:
+
+1. **改代码** → `python3 -m py_compile chatmgr.py` 语法检查 → 实跑 `list` 和目标子命令(本项目没有自动化测试,验证靠手动跑)。
+2. **测破坏性命令**(`rm` / `purge`)只在临时目录做,见「安全测试」一节,不要碰真实数据。
+3. **加文件/文档** 时,更新上面「标准文件路径」表;新文档放 `docs/`。
+4. **提交**:一笔一个逻辑改动,提交信息写「为什么」不写「改了什么」。
+5. **守住边界**:未经用户明确同意**不要提交**,也不要擅自改 `~/.claude/settings.json` 之类的用户环境文件。
+6. **保持纯标准库、单文件**;要引入第三方依赖先问。
+
+## 文档约定
+
+项目文档统一放在 `docs/` 目录下,不要散落在仓库根目录:
+
+- `docs/prd.md` —— 需求、功能规格、已确认的产品决策
+- `docs/usage.md` —— 命令手册(每个子命令的详细用法)
+- `docs/images/` —— 截图、界面参考图、流程图等图片
+- `docs/api/` —— API 文档、接口约定、第三方服务对接说明
+
+(`CLAUDE.md` 例外,按 Claude Code 惯例放在仓库根目录。)
 
 ## 无关 / 历史
 
