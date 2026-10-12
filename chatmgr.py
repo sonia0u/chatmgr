@@ -970,65 +970,77 @@ def cmd_purge(args, store: SessionStore):
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--project", help="按项目路径/名筛选")
-    common.add_argument("--since", help="起始时间:YYYY-MM-DD 或 7d/2w/3m")
-    common.add_argument("--until", help="截止时间:YYYY-MM-DD 或 7d/2w/3m")
-    common.add_argument("--limit", type=int, help="最多处理 N 个会话")
-    common.add_argument("--json", action="store_true", help="机器可读输出")
-    common.add_argument("--archived", action="store_true", help="把备份也纳入数据源")
+    common.add_argument("-p", "--project", help="按项目路径/名筛选")
+    common.add_argument("-s", "--since", metavar="WHEN", help="起始时间:YYYY-MM-DD 或 7d/2w/3m")
+    common.add_argument("-u", "--until", metavar="WHEN", help="截止时间:YYYY-MM-DD 或 7d/2w/3m")
+    common.add_argument("-l", "--limit", type=int, metavar="N", help="最多处理 N 个会话")
+    common.add_argument("-j", "--json", action="store_true", help="机器可读输出")
+    common.add_argument("-a", "--archived", action="store_true", help="把备份也纳入数据源")
 
-    p = argparse.ArgumentParser(prog="chatmgr", description="Claude Code 聊天记录管理")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p = argparse.ArgumentParser(prog="chatmgr", description="Claude Code 聊天记录管理(不带子命令默认 list)")
+    sub = p.add_subparsers(dest="cmd", metavar="<命令>")
 
     sp = sub.add_parser("list", parents=[common], help="列出会话")
     sp.set_defaults(func=cmd_list)
 
     sp = sub.add_parser("search", parents=[common], help="搜索对话内容")
     sp.add_argument("query")
-    sp.add_argument("-i", "--ignore-case", action="store_true")
+    sp.add_argument("-i", "--ignore-case", dest="ignore_case", action="store_true",
+                    default=True, help="忽略大小写(默认)")
+    sp.add_argument("-c", "--case-sensitive", dest="ignore_case", action="store_false",
+                    help="区分大小写")
     sp.add_argument("--regex", action="store_true")
     sp.add_argument("--role", choices=["user", "assistant"])
     sp.add_argument("--all", action="store_true", help="连工具返回和 thinking 一起搜")
     sp.add_argument("--grep", action="store_true", help="平铺输出,不按会话分组")
-    sp.add_argument("--context", type=int, default=60, help="命中前后字数(默认 60)")
-    sp.add_argument("--max-hits", type=int, default=5, help="每个会话最多显示几处(默认 5)")
+    sp.add_argument("--context", type=int, default=60, metavar="N", help="命中前后字数(默认 60)")
+    sp.add_argument("--max-hits", type=int, default=5, metavar="N", help="每个会话最多显示几处(默认 5)")
     sp.set_defaults(func=cmd_search)
 
     sp = sub.add_parser("show", parents=[common], help="阅读一个会话")
     sp.add_argument("ref", help="id 前缀 / 列表序号 / 标题")
-    sp.add_argument("--full", action="store_true", help="连 thinking 和工具返回一起显示")
+    sp.add_argument("-f", "--full", action="store_true", help="连 thinking 和工具返回一起显示")
     sp.add_argument("--pager", action="store_true", help="用 less 分页")
-    sp.add_argument("--resume", action="store_true", help="直接 claude --resume 此会话")
+    sp.add_argument("-r", "--resume", action="store_true", help="直接 claude --resume 此会话")
     sp.set_defaults(func=cmd_show)
 
     sp = sub.add_parser("export", parents=[common], help="导出会话")
     sp.add_argument("ref")
-    sp.add_argument("--format", choices=["md", "txt", "json"], default="md")
-    sp.add_argument("-o", "--out", help="输出文件(不给则打印到终端)")
+    sp.add_argument("-f", "--format", choices=["md", "txt", "json"], default="md")
+    sp.add_argument("-o", "--out", metavar="FILE", help="输出文件(不给则打印到终端)")
     sp.add_argument("--full", action="store_true")
     sp.add_argument("--pager", action="store_true")
     sp.set_defaults(func=cmd_export)
 
     sp = sub.add_parser("stats", parents=[common], help="统计用量")
-    sp.add_argument("--by", choices=["day", "project", "model", "tool"], help="按维度汇总")
+    sp.add_argument("-b", "--by", choices=["day", "project", "model", "tool"], help="按维度汇总")
     sp.set_defaults(func=cmd_stats)
 
     sp = sub.add_parser("rm", parents=[common], help="删除会话(默认 dry-run,删前自动备份)")
     sp.add_argument("refs", nargs="+")
-    sp.add_argument("--force", action="store_true", help="真的删(不给则只预览)")
+    sp.add_argument("-f", "--force", action="store_true", help="真的删(不给则只预览)")
     sp.set_defaults(func=cmd_rm)
 
     sp = sub.add_parser("purge", parents=[common], help="清除备份(默认 dry-run)")
     sp.add_argument("refs", nargs="*", help="指定会话 id 前缀(不给则全部)")
-    sp.add_argument("--older-than", type=int, help="只清 N 天前的备份")
-    sp.add_argument("--force", action="store_true", help="真的删(不给则只预览)")
+    sp.add_argument("-n", "--older-than", type=int, metavar="DAYS", help="只清 N 天前的备份")
+    sp.add_argument("-f", "--force", action="store_true", help="真的删(不给则只预览)")
     sp.set_defaults(func=cmd_purge)
 
     return p
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # 不带子命令(或直接跟选项)时,默认走 list
+    if not raw:
+        raw = ["list"]
+    elif raw[0].startswith("-") and raw[0] not in ("-h", "--help"):
+        raw = ["list"] + raw
+
+    args = build_parser().parse_args(raw)
+    if not getattr(args, "func", None):
+        args = build_parser().parse_args(["list"])
     if not projects_dir().is_dir() and args.cmd != "purge":
         die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")
     store = SessionStore(include_archived=getattr(args, "archived", False))
