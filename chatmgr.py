@@ -96,6 +96,14 @@ def truncate(s: str, width: int) -> str:
     return out + "…"
 
 
+def flat(s) -> str:
+    """把任意空白(含换行、制表符)压成单个空格。
+
+    标题/项目里若混入换行,会撑破表格行、也会把 fzf 的一条记录拆成两条。
+    """
+    return " ".join(str(s).split())
+
+
 def human_size(n: int) -> str:
     for unit, div in (("MB", 1 << 20), ("KB", 1 << 10)):
         if n >= div:
@@ -290,7 +298,7 @@ def load_session(path: Path, archived: bool = False) -> Session:
         if not s.project:
             cwd = rec.get("cwd")
             if isinstance(cwd, str) and cwd.strip():
-                s.project = cwd.strip()
+                s.project = flat(cwd)
         ts = parse_ts(rec.get("timestamp"))
         if ts:
             if s.start is None or ts < s.start:
@@ -330,7 +338,7 @@ def load_session(path: Path, archived: bool = False) -> Session:
                         has_reply = True
             if has_reply:
                 s.replies += 1
-    s.title = custom or ai or agent or (truncate(s.first_prompt, 60) if s.first_prompt else "(无标题)")
+    s.title = flat(custom or ai or agent or (truncate(s.first_prompt, 60) if s.first_prompt else "(无标题)"))
     if not s.project:
         s.project = path.parent.name
     return s
@@ -816,27 +824,27 @@ def cmd_pick(args, store: SessionStore):
     idx = store.index_map()
     lines = []
     for s in sessions:
+        i = idx.get(str(s.path), "?")
         tag = " [已归档]" if s.archived else ""
-        lines.append(
-            "\t".join(
-                [
-                    str(idx.get(str(s.path), "?")),
-                    fmt_time(s.end or s.start),
-                    truncate(s.short_project, 22),
-                    s.title + tag,
-                    f"{s.prompts}+{s.replies}",
-                ]
-            )
+        # 自己排版成一行,再把序号作为隐藏的末列(fzf 只显示第 1 列,搜索也只看第 1 列)
+        display = "  ".join(
+            [
+                fmt_time(s.end or s.start),
+                pad(truncate(s.short_project, 22), 22),
+                truncate(s.title + tag, 40),
+                f"{s.prompts}+{s.replies}",
+            ]
         )
+        lines.append(display + "\t" + str(i))
     exe, script = sys.executable, os.path.abspath(__file__)
     extra = ["-a"] if args.archived else []
     sub = subprocess.run(
         [
             fzf,
             "--delimiter=\t",
-            "--with-nth=2,4,3,5",
-            "--nth=4,3,5",
-            "--preview", f"{shlex.quote(exe)} {shlex.quote(script)} show {{1}}",
+            "--with-nth=1",
+            "--nth=1",
+            "--preview", f"{shlex.quote(exe)} {shlex.quote(script)} show {{2}}",
             "--preview-window=right:60%:wrap",
             "--expect=ctrl-r,ctrl-d",
             "--header=Enter 打开 · Ctrl-R 续聊 · Ctrl-D 预览删除",
@@ -853,7 +861,7 @@ def cmd_pick(args, store: SessionStore):
     sel = out[1] if len(out) > 1 else ""
     if not sel.strip():
         return
-    ref = sel.split("\t")[0]
+    ref = sel.rsplit("\t", 1)[-1].strip()
     if key == "ctrl-r":
         cmd = ["show", ref, "-r"]
     elif key == "ctrl-d":
@@ -971,11 +979,13 @@ def cmd_rm(args, store: SessionStore):
         print(f"  [{s.sid[:8]}] {s.title}")
         print(f"      {s.project}    {fmt_time(s.end or s.start)}    {human_size(s.size)}")
         if s.first_prompt:
-            print(paint(f"      首句: {truncate(s.first_prompt, 70)}", "2", on))
+            print(paint(f"      首句: {truncate(flat(s.first_prompt), 70)}", "2", on))
         if s.archived:
             print(paint("      ⚠ 这是备份文件本身,不是活会话", "1;31", on))
     if not args.force:
-        print(paint("\n这是预览(dry-run)。确认无误后加 --force 真删。", "1;33", on))
+        cmd = "cgr rm " + " ".join(shlex.quote(r) for r in args.refs) + " -f"
+        print(paint("\n这是预览(dry-run),还没删。确认无误后运行:", "1;33", on))
+        print("  " + cmd)
         return
 
     done = []
@@ -993,9 +1003,11 @@ def cmd_rm(args, store: SessionStore):
             print(paint(f"\n删除失败:{s.path}\n  {e}", "1;31", on))
             print(f"备份已在:{dest}")
             sys.exit(1)
-        done.append(s.sid[:8])
+        done.append(s.sid)
         print(f"  已删 {s.sid[:8]}  (备份 → {dest})")
     print(f"\n完成:{len(done)} 个会话已备份并删除。")
+    print(paint(f"备份留在 {archive_dir()}(当保险)。确认不需要时清掉:", "2", on))
+    print(paint("  cgr purge " + " ".join(done) + " -f", "2", on))
 
 
 def cmd_purge(args, store: SessionStore):
@@ -1045,7 +1057,12 @@ def cmd_purge(args, store: SessionStore):
         print(f"  {p.stem[:8]}  {human_size(sz):>8}  {title}")
     print(f"合计 {human_size(total)}")
     if not args.force:
-        print(paint("\n这是预览(dry-run)。确认无误后加 --force 真删。", "1;33", on))
+        bits = ["cgr purge"] + [shlex.quote(r) for r in args.refs]
+        if args.older_than is not None:
+            bits += ["-n", str(args.older_than)]
+        bits.append("-f")
+        print(paint("\n这是预览(dry-run),还没删。确认无误后运行:", "1;33", on))
+        print("  " + " ".join(bits))
         return
 
     removed = set()
