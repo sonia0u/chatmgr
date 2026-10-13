@@ -69,6 +69,15 @@ SUBCOMMANDS = {
 }
 KNOWN_COMMANDS = set(SUBCOMMANDS) | {a for al in SUBCOMMANDS.values() for a in al}
 
+# 搜索结果里"命中来源"的显示名(和 show 里的措辞一致,别用 user/assistant 这种程序叫法)
+KIND_LABEL = {
+    "user": "你",
+    "assistant": "Claude",
+    "tool": "工具",
+    "thinking": "思考",
+    "tool_result": "工具返回",
+}
+
 
 # ---------------------------------------------------------------- 小工具
 
@@ -905,7 +914,7 @@ def cmd_search(args, store: SessionStore):
     if args.grep:  # 平铺:每行带标题,一眼看出是哪次对话里的
         for s, _, sn in content_hits:
             for kind, text in sn:
-                print(f"{s.title} › {kind}: {text}")
+                print(f"{_highlight(s.title, pat, on)} › {KIND_LABEL.get(kind, kind)}: {text}")
         if title_hits:
             print(paint(f"— 另有 {len(title_hits)} 个会话是【标题】命中 —", "2", on))
         total = sum(c for _, c, _ in content_hits)
@@ -915,7 +924,7 @@ def cmd_search(args, store: SessionStore):
     if title_hits:
         print(paint(f"【标题命中】{len(title_hits)} 个会话", "1;36", on))
         for s in title_hits:
-            print(f"  [{sidx(s)}] {s.title}")
+            print(f"  [{sidx(s)}] {_highlight(s.title, pat, on)}")
             print(f"      {meta(s)}")
             print(paint(f"      → 打开 cgr {sidx(s)} · 续聊 cgr {sidx(s)} -r", "2", on))
         print()
@@ -923,10 +932,10 @@ def cmd_search(args, store: SessionStore):
         total = sum(c for _, c, _ in content_hits)
         print(paint(f"【内容命中】{len(content_hits)} 个会话,{total} 处", "1;36", on))
         for s, c, sn in content_hits:
-            print(f"  [{sidx(s)}] {s.title}  ({c} 处)")  # 标明是哪次对话里的内容
+            print(f"  [{sidx(s)}] {_highlight(s.title, pat, on)}  ({c} 处)")  # 标明是哪次对话里的内容
             print(f"      {meta(s)}")
             for kind, text in sn:
-                print(f"      {paint(kind, '2', on)}: {text}")
+                print(f"      {paint(KIND_LABEL.get(kind, kind), '2', on)}: {text}")
             if c > len(sn):
                 print(paint(f"      … 另有 {c - len(sn)} 处。全看:{all_cmd}", "2", on))
             print(paint(f"      → 打开 cgr {sidx(s)} · 续聊 cgr {sidx(s)} -r", "2", on))
@@ -944,6 +953,20 @@ def _snippet(text: str, m, ctx: int, pat=None, on: bool = False) -> str:
         if mm and mm.end() > mm.start():
             out = out[: mm.start()] + paint(out[mm.start(): mm.end()], "1;31", True) + out[mm.end():]
     return out
+
+
+def _highlight(text: str, pat, on: bool) -> str:
+    """把 text 里所有匹配 pat 的地方上色(用于标题里的命中词)。"""
+    if not on or pat is None or not pat.pattern:
+        return text
+    out, last = [], 0
+    for m in pat.finditer(text):
+        if m.end() == m.start():
+            continue
+        out += [text[last:m.start()], paint(text[m.start():m.end()], "1;31", on)]
+        last = m.end()
+    out.append(text[last:])
+    return "".join(out)
 
 
 def _resume_session(s: Session):

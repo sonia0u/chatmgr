@@ -91,7 +91,7 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 - 命令别名集中在模块常量 `SUBCOMMANDS`(`list`→`ls`/`l`,`search`→`s`/`grep`,`show`→`o`/`cat`,`pick`→`f`,`export`→`e`,`stats`→`st`/`stat`,`rm`→`d`/`del`,`purge`→`p`,`dedupe`→`dd`,`rename`→无别名);`KNOWN_COMMANDS` 供裸参数分派判断。加别名改这一处即可。
 - 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived)。
 - `rm` 的 `refs` 可为空:此时按 `-p` 的筛选批量删;`refs` 与 `-p` 都不给则报错 —— 绝不误删全部。
-- `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。搜索**同时搜标题**(标题不在 `search_units()` 里,得单独对 `s.title` 匹配);结果分**【标题命中】/【内容命中】**两组,内容命中标明所属标题。每个会话默认只展开 `--max-hits`(默认 5)处,`--max-hits 0` 或 `--grep` = 不限。`--grep` 每行前缀标题;`--pick` 把命中的会话送进 `run_picker()`;`--json` 为 `{query, title_matches, content_matches}`。
+- `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。搜索**同时搜标题**(标题不在 `search_units()` 里,得单独对 `s.title` 匹配);结果分**【标题命中】/【内容命中】**两组,内容命中标明所属标题。每个会话默认只展开 `--max-hits`(默认 5)处,`--max-hits 0` 或 `--grep` = 不限。`--grep` 每行前缀标题;`--pick` 把命中的会话送进 `run_picker()`;`--json` 为 `{query, title_matches, content_matches}`;命中来源标签经 `KIND_LABEL` 映射成中文(`user`→你、`assistant`→Claude、`tool`→工具、`thinking`→思考、`tool_result`→工具返回),`--json` 里仍是原始 kind。
 - `list` 的序号列高亮(便于直接拿来 `cgr 3`)。
 - `pick` 与 `search --pick` 都走 `run_picker(store, sessions, ...)`(启动 fzf 并**委托自身子命令** `show` / `show -r` / `rm`)。`--multi`(`Tab` 多选):`Ctrl-D` 把全部勾选的交给 `rm` 批量预览删,`Enter` 多选时依次 `show`;`Ctrl-E` 绑 `rename`(交互式问标题)再 `reload`(调内部子命令 `_picklines`,复用 `session_lines()`;它不在 `<命令>` 帮助里,由 `main()` 提前拦截)—— 只有能 reload 的路径(`pick`)才给 Ctrl-E。`pick` 可带初筛词 `cgr f yazi`(传 fzf `--query`);`search --pick` 只把命中的会话送进 picker。列表行上色(`--ansi`),预览强制加 `--color` —— 否则 fzf 预览不是 TTY,颜色会被自动关掉,和直接跑 `show` 不一致。
 - `show` 在交互终端下读完会问一句"要续聊吗",确认即 `claude --resume`;非 TTY / `--json` / `--pager` 时不问。
