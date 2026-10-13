@@ -80,7 +80,7 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 
 ## 不可违反的设计约定
 
-- **破坏性操作默认只预览**:`rm` / `purge` 不加 `--force` 只打印、不动手。这是安全底线,不要加"默认即执行"的开关。
+- **破坏性操作默认只预览**:`rm` / `purge` 不加 `--force` 只打印预览,并把等价命令复制到剪贴板(`copy_to_clipboard`);**交互终端下再用 `_confirm()` 问一句 `[y/N]`**,确认才执行;非 TTY 一律只预览。这是安全底线,不要加"默认即执行"的开关,脚本里显式用 `--force`。
 - **删前必须备份**:`rm` 先 `backup_session()` 成功,再删原件;备份失败立即中止、绝不删。**没有 `--no-backup` 逃生口**。
 - **归档 = 原样复制 jsonl**(可还原),不是转 markdown。markdown 属于 `export`,是另一条线。
 - **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
