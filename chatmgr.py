@@ -27,6 +27,11 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+try:
+    import readline  # noqa: F401  让 input() 支持方向键/行编辑/历史(脚本里默认不加载)
+except ImportError:
+    pass
+
 # ---------------------------------------------------------------- 常量 / 路径
 
 
@@ -913,10 +918,10 @@ def pick_lines(store: SessionStore, args) -> list[str]:
         tag = " [已归档]" if s.archived else ""
         display = "  ".join(
             [
-                paint(fmt_time(s.end or s.start), "2", on),
-                paint(pad(truncate(s.short_project, 22), 22), pcolors.get(s.short_project, "36"), on),
-                truncate(s.title + tag, 40),
+                pad(truncate(s.title + tag, 32), 32),  # 标题放最前,最能认出是哪次对话
+                paint(pad(truncate(s.short_project, 18), 18), pcolors.get(s.short_project, "36"), on),
                 paint(f"{s.prompts}+{s.replies}", "2", on),
+                paint(fmt_time(s.end or s.start), "2", on),  # 时间往后放
             ]
         )
         lines.append(display + "\t" + str(idx.get(str(s.path), "?")))
@@ -945,7 +950,7 @@ def _filter_args(args) -> list[str]:
 
 
 def cmd_pick(args, store: SessionStore):
-    """fzf 交互选择:Enter 打开 / Tab 多选 / Ctrl-R 续聊 / Ctrl-E 改名 / Ctrl-D 批量删。"""
+    """fzf 交互选择:Enter 打开 / Tab 多选 / Ctrl-R 续聊 / Ctrl-E 改名 / Ctrl-D 删除。"""
     if not sys.stdin.isatty():
         die("cgr pick 需要在交互终端下运行(fzf 需要 tty);非交互场景请用 list / search")
     lines = pick_lines(store, args)
@@ -969,6 +974,7 @@ def cmd_pick(args, store: SessionStore):
             "--ansi",
             "--multi",  # Tab / Shift-Tab 多选
             "--layout=reverse",  # 列表从顶部往下排,别贴底留大片空白
+            "--prompt=搜索 > ",  # 左上角那个框是模糊过滤用的,标清楚
             "--delimiter=\t",
             "--with-nth=1",
             "--nth=1",
@@ -976,7 +982,7 @@ def cmd_pick(args, store: SessionStore):
             "--preview-window=right:60%:wrap",
             "--expect=ctrl-r,ctrl-d",
             "--bind", bind,
-            "--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-E 改名 · Ctrl-D 批量删(预览)",
+            "--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-E 改名 · Ctrl-D 删除(预览)",
             "--height=~90%",  # 自适应:条目少时窗口自动缩,不留空白
         ],
         input="\n".join(lines),
@@ -1293,7 +1299,7 @@ def cmd_rename(args, store: SessionStore):
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             die("没给新标题;非交互下请写成:cgr rename <ref> <新标题>")
         try:
-            title = flat(input(f"新标题(当前: {s.title})= ").strip())
+            title = flat(input(f"新标题(回车确定 · 留空取消 · 当前:{s.title})= ").strip())
         except (EOFError, KeyboardInterrupt):
             print()
             title = ""
