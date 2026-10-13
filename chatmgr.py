@@ -1468,10 +1468,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("search", aliases=SUBCOMMANDS["search"], parents=[common], help="搜索对话内容")
     sp.add_argument("query")
-    sp.add_argument("-i", "--ignore-case", dest="ignore_case", action="store_true",
-                    default=True, help="忽略大小写(默认)")
     sp.add_argument("-c", "--case-sensitive", dest="ignore_case", action="store_false",
-                    help="区分大小写")
+                    default=True, help="区分大小写(默认忽略大小写)")
     sp.add_argument("--regex", action="store_true")
     sp.add_argument("--role", choices=["user", "assistant"])
     sp.add_argument("--all", action="store_true", help="连工具返回和 thinking 一起搜")
@@ -1558,8 +1556,6 @@ def main(argv=None):
             raw = ["search"] + raw                                  # 其他词 → 搜索
 
     args = build_parser().parse_args(raw)
-    if not getattr(args, "func", None):
-        args = build_parser().parse_args(["list"])
     _COLOR_MODE = getattr(args, "color", None)  # --color / --no-color 覆盖自动判断
     if not projects_dir().is_dir() and args.func is not cmd_purge:
         die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")

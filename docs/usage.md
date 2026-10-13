@@ -132,7 +132,7 @@ cgr -j | jq '.[].title'    # 只取标题(JSON 喂给 jq)
 **完整语法**
 
 ```bash
-cgr search <query> [--ignore-case | --case-sensitive] [--regex]
+cgr search <query> [--case-sensitive] [--regex]
            [--role {user,assistant}] [--all] [--grep]
            [--context N] [--max-hits N] [全局参数]
 ```
@@ -172,7 +172,7 @@ cgr search <query> [--ignore-case | --case-sensitive] [--regex]
 | `cgr search --project 项目 词` | `cgr 词 -p 项目` | `-p`:只在某个项目里搜 |
 | `cgr search --project 项目 --regex 词` | `cgr 词 --regex -p 项目` | `--regex`:把 `词` 当**正则**匹配 |
 
-> **默认忽略大小写**:`--ignore-case`(`-i`)本来就是默认,加不加一个样;要**区分大小写**才加 `-c`。
+> **默认忽略大小写**:不动它就是忽略大小写;要**区分大小写**才加 `-c`。
 >
 > **省掉 `search` 时,`词` 必须写在最前**(`cgr 词 --grep` ✓)。写成 `cgr --grep 词` / `cgr -c 词` 会被当成 **`list` 的参数**而报错 —— 裸参数规则是"首参以 `-` 开头 → `list`"。
 
