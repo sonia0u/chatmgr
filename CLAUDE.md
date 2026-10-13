@@ -28,6 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `~/.claude/history.jsonl` | 用户的 prompt 流水(本工具暂未使用) |
 | `~/.claude/settings.json` | 环境配置,含 `cleanupPeriodDays`;**不属于本仓库** |
 | `~/claude-archive/<项目>/<会话id>.jsonl` | 归档/备份,同级有 `manifest.json`;**仓库外**,不入 git |
+| `~/claude-archive/_dupes/<会话id>.<来源文件夹>.jsonl` | `dedupe` 移入的重复副本(保留不删) |
 | `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` | 覆盖上面两个根目录(测试时用,见「安全测试」) |
 
 ## 常用命令
@@ -40,11 +41,11 @@ python3 -m py_compile chatmgr.py    # 语法检查(本项目没有测试套件)
 cgr <命令> -h                        # 看某子命令的全部参数
 ```
 
-子命令:`list / search / show / pick / export / stats / rm / purge`,各有常用别名(见下)。
+子命令:`list / search / show / pick / export / stats / rm / purge / dedupe / rename`,各有常用别名(见下)。
 
-**裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`;其他词 → `search`;已知命令/别名 → 原样。
+**裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`(当序号);形如会话 id 前缀(≥6 位十六进制,可带 `-`)→ `show`;其他词 → `search`;已知命令/别名 → 原样。
 
-**验证靠手动跑**,没有自动化测试。改完后至少跑一遍 `list`(确认会话数与 `find ~/.claude/projects -maxdepth 2 -name '*.jsonl' | wc -l` 一致)和目标子命令。
+**验证靠手动跑**,没有自动化测试。改完后至少跑一遍 `list` 和目标子命令。注意:会话数 = jsonl 文件数 **减去重复 id**(同一会话可能在多个项目文件夹各有一份,见下;`list` 会提示"重复会话")。
 
 ## 安全测试(重要)
 
@@ -77,24 +78,26 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 - **噪音**:`attachment` 记录里大量是 `total_tokens_reminder`;assistant 记录里有 `thinking`。搜索默认排除工具返回和 thinking(`--all` 才纳入)。
 - **token** 从 assistant 的 `message.usage` 累加五类:input / output / cache_read / cache_creation / thinking。`list` 显示的 `tok = input+output`,**不含 cache**(cache_read 是重复上下文,计进去会撑爆数字)。
 - **jsonl 是 Claude Code 内部格式,无契约**,随版本变化。所有解析一律逐行 `try/except`、未知 `type` 忽略(见 `iter_records`)。不要硬编码"必需"字段。
+- **同一会话 id 可能落在多个项目文件夹**(在不同 cwd 下 resume 过,或项目文件夹被复制),两份内容会不一致。`SessionStore._discover()` 按 id 去重:保留最后活动最新、且优先活会话的那一份;被丢弃的份数记在 `store.duplicates`,由 `list` 提示。
 
 ## 不可违反的设计约定
 
-- **破坏性操作默认只预览**:`rm` / `purge` 不加 `--force` 只打印预览,并把等价命令复制到剪贴板(`copy_to_clipboard`);**交互终端下再用 `_confirm()` 问一句 `[y/N]`**,确认才执行;非 TTY 一律只预览。这是安全底线,不要加"默认即执行"的开关,脚本里显式用 `--force`。
-- **删前必须备份**:`rm` 先 `backup_session()` 成功,再删原件;备份失败立即中止、绝不删。**没有 `--no-backup` 逃生口**。
+- **破坏性操作默认只预览**:`rm` / `purge` / `dedupe` 不加 `--force` 只打印预览;**交互终端下再问一句**(`rm` 用 `_ask_delete()` 三选:y=直删、n=删并备份、其他=取消;`purge` / `dedupe` 用 `_confirm()`);**非 TTY 一律只预览、绝不执行**。这是安全底线,不要加"默认即执行"的开关,脚本里显式用 `--force`。
+- **删除默认备份,直删要明示**:`rm` 走备份时先 `backup_session()` 成功再删原件,备份失败立即中止、绝不删;直删(交互按 `y`,或脚本 `--no-backup`)不备份,但会明确提示"删了不可恢复"。
 - **归档 = 原样复制 jsonl**(可还原),不是转 markdown。markdown 属于 `export`,是另一条线。
 - **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
 
 ## 参数与输出约定
 
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
-- 命令别名集中在模块常量 `SUBCOMMANDS`(`list`→`ls`/`l`,`search`→`s`/`grep`,`show`→`o`/`cat`,`pick`→`f`,`export`→`e`,`stats`→`st`/`stat`,`rm`→`d`/`del`,`purge`→`p`);`KNOWN_COMMANDS` 供裸参数分派判断。加别名改这一处即可。
+- 命令别名集中在模块常量 `SUBCOMMANDS`(`list`→`ls`/`l`,`search`→`s`/`grep`,`show`→`o`/`cat`,`pick`→`f`,`export`→`e`,`stats`→`st`/`stat`,`rm`→`d`/`del`,`purge`→`p`,`dedupe`→`dd`,`rename`→无别名);`KNOWN_COMMANDS` 供裸参数分派判断。加别名改这一处即可。
 - 全局短选项在所有子命令保持一致:`-p`(project) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived)。
 - `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。
 - `list` 的序号列高亮(便于直接拿来 `cgr 3`)。
-- `pick` 用 `fzf`(缺失时报错退出),选中后**委托自身子命令**(`show` / `show -r` / `rm`)。
+- `pick` 用 `fzf`(缺失时报错退出),选中后**委托自身子命令**(`show` / `show -r` / `rm`);列表行上色(fzf 加 `--ansi`),预览强制加 `--color` —— 否则 fzf 预览不是 TTY,颜色会被自动关掉,和直接跑 `show` 不一致。
 - `show` 在交互终端下读完会问一句"要续聊吗",确认即 `claude --resume`;非 TTY / `--json` / `--pager` 时不问。
-- 输出:尊重 `NO_COLOR`,非 TTY 不上色;默认不分页(便于管道给 `less`/`grep`),`--pager` 才走 `less`;长行不硬截断,交给终端换行。
+- 项目(文件夹)配色:`project_colors()` 按项目名排序分配 `PROJECT_COLORS` 调色板(`38;5;N` 256 色),出现在 `list` / `pick` / `search` / `show` 的项目列;以**完整会话列表**为基准,所以各命令、各筛选下同一项目颜色一致。改配色改这个常量即可。
+- 输出:尊重 `NO_COLOR`,非 TTY 不上色;`--color` / `--no-color` 强制覆盖(模块级 `_COLOR_MODE`,由 `main()` 设置);默认不分页(便于管道给 `less`/`grep`),`--pager` 才走 `less`;长行不硬截断,交给终端换行。
 
 ## 工作说明
 

@@ -59,6 +59,8 @@ SUBCOMMANDS = {
     "stats": ["st", "stat"],
     "rm": ["d", "del"],
     "purge": ["p"],
+    "dedupe": ["dd"],
+    "rename": [],
 }
 KNOWN_COMMANDS = set(SUBCOMMANDS) | {a for al in SUBCOMMANDS.values() for a in al}
 
@@ -119,7 +121,12 @@ def human_tokens(n: int) -> str:
     return str(n)
 
 
+_COLOR_MODE: bool | None = None  # None=自动(看是否 TTY);True/False=强制开/关
+
+
 def color_enabled() -> bool:
+    if _COLOR_MODE is not None:
+        return _COLOR_MODE
     if os.environ.get("NO_COLOR"):
         return False
     return sys.stdout.isatty()
@@ -127,6 +134,20 @@ def color_enabled() -> bool:
 
 def paint(s: str, code: str, on: bool) -> str:
     return f"\033[{code}m{s}\033[0m" if on else s
+
+
+# 项目(文件夹)配色:按项目名排序分配,保证同一批会话里各项目颜色互不相同
+PROJECT_COLORS = [
+    "38;5;39", "38;5;208", "38;5;35", "38;5;170", "38;5;214", "38;5;44",
+    "38;5;203", "38;5;141", "38;5;78", "38;5;220", "38;5;117", "38;5;180",
+    "38;5;213", "38;5;84", "38;5;45", "38;5;209",
+]
+
+
+def project_colors(sessions) -> dict:
+    """{项目名: 颜色码}。以**完整会话列表**为基准,所以各命令、各筛选下同一项目颜色一致。"""
+    uniq = sorted({s.short_project for s in sessions})
+    return {p: PROJECT_COLORS[i % len(PROJECT_COLORS)] for i, p in enumerate(uniq)}
 
 
 def emit(text: str, use_pager: bool):
@@ -140,35 +161,37 @@ def emit(text: str, use_pager: bool):
     sys.stdout.write(text)
 
 
-def copy_to_clipboard(text: str) -> bool:
-    """尽力把文本放进系统剪贴板(macOS pbcopy / Linux wl-copy / xclip)。"""
-    for prog in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"]):
-        exe = shutil.which(prog[0])
-        if not exe:
-            continue
-        try:
-            subprocess.run(
-                [exe, *prog[1:]],
-                input=text.encode("utf-8"),
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-        except Exception:
-            continue
-    return False
+def _confirm(prompt: str, cancel_msg: str = "已取消,什么都没动。") -> bool:
+    """只在交互终端返回 True;非 TTY 一律 False(保持 dry-run 的安全默认)。
 
-
-def _confirm(prompt: str) -> bool:
-    """只在交互终端返回用户选择;非 TTY 一律 False(保持 dry-run 的安全默认)。"""
+    取消时自己打印提示,所以非交互场景(脚本/管道)不会冒出"已取消"这种误导性输出。
+    """
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
     try:
-        return input(prompt).strip().lower() in ("y", "yes")
+        if input(prompt).strip().lower() in ("y", "yes"):
+            return True
     except (EOFError, KeyboardInterrupt):
         print()
-        return False
+    print(paint(cancel_msg, "2", color_enabled()))
+    return False
+
+
+def _ask_delete(on: bool) -> str:
+    """删除时的三选:y=直接删(不备份)、n=删并备份、其他=取消。非 TTY 返回 cancel。"""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return "cancel"
+    print(paint("怎么删?y = 直接删(不备份) / n = 删并备份一份 / 其他 = 取消", "1;33", on))
+    try:
+        ans = input("> ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return "cancel"
+    if ans in ("y", "yes"):
+        return "direct"
+    if ans in ("n", "no"):
+        return "backup"
+    return "cancel"
 
 
 def parse_ts(v):
@@ -239,6 +262,7 @@ class Session:
     tools: Counter = field(default_factory=Counter)
     first_prompt: str = ""
     archived: bool = False
+    title_explicit: bool = False  # 标题是否来自 custom-title/ai-title/agent-name
 
     @property
     def short_project(self) -> str:
@@ -369,6 +393,7 @@ def load_session(path: Path, archived: bool = False) -> Session:
                         has_reply = True
             if has_reply:
                 s.replies += 1
+    s.title_explicit = bool(custom or ai or agent)
     s.title = flat(custom or ai or agent or (truncate(s.first_prompt, 60) if s.first_prompt else "(无标题)"))
     if not s.project:
         s.project = path.parent.name
@@ -378,9 +403,11 @@ def load_session(path: Path, archived: bool = False) -> Session:
 class SessionStore:
     """发现并缓存会话。include_archived 时把备份也纳入数据源。"""
 
-    def __init__(self, include_archived: bool = False):
+    def __init__(self, include_archived: bool = False, dedupe: bool = True):
         self.include_archived = include_archived
+        self.dedupe = dedupe
         self._cache: list[Session] | None = None
+        self.duplicates = 0
 
     def sessions(self) -> list[Session]:
         if self._cache is None:
@@ -398,8 +425,26 @@ class SessionStore:
             if ad.is_dir():
                 for p in sorted(ad.glob("*/*.jsonl")):
                     out.append(load_session(p, archived=True))
-        out.sort(key=lambda s: (s.end or s.start or dt.datetime.min), reverse=True)
-        return out
+        out.sort(key=lambda s: (s.end or s.start or dt.datetime.min, not s.archived), reverse=True)
+        if not self.dedupe:
+            return out
+        # 同一个会话 id 可能落在多个项目文件夹里(在不同目录 resume 过),文件内容会不一致。
+        # 只保留最新、且优先活会话的那一份,否则列表会出现两行相互矛盾的同一会话。
+        best_title: dict[str, str] = {}
+        for s in out:
+            if s.title_explicit:
+                best_title.setdefault(s.sid, s.title)
+        seen: set[str] = set()
+        uniq: list[Session] = []
+        for s in out:
+            if s.sid in seen:
+                self.duplicates += 1
+                continue
+            seen.add(s.sid)
+            if not s.title_explicit and s.sid in best_title:
+                s.title = best_title[s.sid]  # 借用同一会话另一份里的自定义标题,免得标题忽然变样
+            uniq.append(s)
+        return uniq
 
     def index_map(self) -> dict[str, int]:
         return {str(s.path): i for i, s in enumerate(self.sessions(), 1)}
@@ -577,14 +622,14 @@ def _safe_name(name: str) -> str:
 # ---------------------------------------------------------------- 渲染
 
 
-def render_session(s: Session, full: bool, on: bool) -> str:
+def render_session(s: Session, full: bool, on: bool, proj_color: str = "36") -> str:
     out = []
     head = f"=== {s.title} ==="
     if s.archived:
         head += "  [已归档]"
     out.append(paint(head, "1;36", on))
     span = f"{fmt_time(s.start)} ~ {fmt_time(s.end)}"
-    out.append(f"项目: {s.project}")
+    out.append(f"项目: {paint(s.project, proj_color, on)}")
     out.append(f"时间: {span}    会话: {s.sid}")
     toks = s.tokens
     out.append(
@@ -716,6 +761,7 @@ def cmd_list(args, store: SessionStore):
         return
     idx = store.index_map()
     on = color_enabled()
+    pcolors = project_colors(store.sessions())
     rows = [["#", "时间", "项目", "标题", "消息", "大小", "tok"]]
     for s in sessions:
         title = s.title + ("  [已归档]" if s.archived else "")
@@ -723,7 +769,7 @@ def cmd_list(args, store: SessionStore):
             [
                 paint(str(idx.get(str(s.path), "?")), "1;33", on),  # 序号高亮,便于复制去 show/rm
                 fmt_time(s.end or s.start),
-                truncate(s.short_project, 22),
+                paint(truncate(s.short_project, 22), pcolors.get(s.short_project, "36"), on),
                 truncate(title, 34),
                 f"{s.prompts}+{s.replies}",
                 human_size(s.size),
@@ -732,6 +778,10 @@ def cmd_list(args, store: SessionStore):
         )
     print_table(rows)
     print(f"\n{len(sessions)} 个会话   (tok = input+output)")
+    if store.duplicates:
+        print(paint(
+            f"⚠ 有 {store.duplicates} 份重复会话(同一 id 落在多个项目文件夹,内容不一致)"
+            f",已只保留最新的一份", "2", on))
 
 
 def cmd_search(args, store: SessionStore):
@@ -749,6 +799,7 @@ def cmd_search(args, store: SessionStore):
 
     ctx = args.context
     on = color_enabled()
+    pcolors = project_colors(store.sessions())
     cap = 10**9 if args.grep else args.max_hits
     hits = []  # (session, 真实命中数, 用于展示的片段)
     for s in sessions:
@@ -787,7 +838,7 @@ def cmd_search(args, store: SessionStore):
         for s, c, sn in hits:
             tag = "  [已归档]" if s.archived else ""
             print(paint(f"[{idx.get(str(s.path), '?')}] {s.title}{tag}  ({c} 处命中)", "1;36", on))
-            print(f"    {fmt_time(s.end or s.start)}  {s.project}")
+            print(f"    {fmt_time(s.end or s.start)}  {paint(s.project, pcolors.get(s.short_project, '36'), on)}")
             for kind, text in sn:
                 print(f"    {paint(kind, '2', on)}: {text}")
             if c > len(sn):
@@ -827,7 +878,9 @@ def cmd_show(args, store: SessionStore):
     if args.json:
         print(export_json(s, args.full))
         return
-    emit(render_session(s, args.full, color_enabled()) + "\n", args.pager)
+    on = color_enabled()
+    pcolors = project_colors(store.sessions())
+    emit(render_session(s, args.full, on, pcolors.get(s.short_project, "36")) + "\n", args.pager)
     # 读完顺手问一句要不要续聊(仅交互终端)
     if not args.pager and sys.stdin.isatty() and sys.stdout.isatty():
         try:
@@ -853,6 +906,8 @@ def cmd_pick(args, store: SessionStore):
     if not fzf:
         die("没装 fzf —— brew install fzf")
     idx = store.index_map()
+    on = color_enabled()
+    pcolors = project_colors(store.sessions())
     lines = []
     for s in sessions:
         i = idx.get(str(s.path), "?")
@@ -860,22 +915,26 @@ def cmd_pick(args, store: SessionStore):
         # 自己排版成一行,再把序号作为隐藏的末列(fzf 只显示第 1 列,搜索也只看第 1 列)
         display = "  ".join(
             [
-                fmt_time(s.end or s.start),
-                pad(truncate(s.short_project, 22), 22),
+                paint(fmt_time(s.end or s.start), "2", on),
+                paint(pad(truncate(s.short_project, 22), 22), pcolors.get(s.short_project, "36"), on),
                 truncate(s.title + tag, 40),
-                f"{s.prompts}+{s.replies}",
+                paint(f"{s.prompts}+{s.replies}", "2", on),
             ]
         )
         lines.append(display + "\t" + str(i))
     exe, script = sys.executable, os.path.abspath(__file__)
     extra = ["-a"] if args.archived else []
+    preview = f"{shlex.quote(exe)} {shlex.quote(script)} show {{2}}"
+    if on:
+        preview += " --color"  # 预览在 fzf 里不是 TTY,得强制上色,否则和你直接跑 cgr 不一样
     sub = subprocess.run(
         [
             fzf,
+            "--ansi",
             "--delimiter=\t",
             "--with-nth=1",
             "--nth=1",
-            "--preview", f"{shlex.quote(exe)} {shlex.quote(script)} show {{2}}",
+            "--preview", preview,
             "--preview-window=right:60%:wrap",
             "--expect=ctrl-r,ctrl-d",
             "--header=Enter 打开 · Ctrl-R 续聊 · Ctrl-D 预览删除",
@@ -1005,7 +1064,7 @@ def cmd_rm(args, store: SessionStore):
     if not targets:
         die("没指定要删的会话")
     on = color_enabled()
-    print(paint(f"将删除 {len(targets)} 个会话(删前自动备份到 {archive_dir()}):", "1;33", on))
+    print(paint(f"将删除 {len(targets)} 个会话:", "1;33", on))
     for s in targets:
         print(f"  [{s.sid[:8]}] {s.title}")
         print(f"      {s.project}    {fmt_time(s.end or s.start)}    {human_size(s.size)}")
@@ -1013,36 +1072,45 @@ def cmd_rm(args, store: SessionStore):
             print(paint(f"      首句: {truncate(flat(s.first_prompt), 70)}", "2", on))
         if s.archived:
             print(paint("      ⚠ 这是备份文件本身,不是活会话", "1;31", on))
+
+    backup = not getattr(args, "no_backup", False)  # 默认删前备份;--no-backup 或交互按 y 关掉
     if not args.force:
-        cmd = "cgr rm " + " ".join(shlex.quote(r) for r in args.refs) + " -f"
-        print(paint("\n预览完成,还没删。等价命令:", "1;33", on))
-        print("  " + cmd)
-        if copy_to_clipboard(cmd):
-            print(paint("  (已复制到剪贴板,可直接粘贴)", "2", on))
-        if not _confirm(paint("要现在删除吗?(先自动备份)[y/N] ", "1;33", on)):
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(paint("\n非交互终端,未删除。要删加 -f。", "1;33", on))
+            return
+        choice = _ask_delete(on)
+        if choice == "cancel":
             print(paint("已取消,什么都没删。", "2", on))
             return
+        backup = choice == "backup"
 
     done = []
     for s in targets:
-        try:
-            dest = backup_session(s)
-        except Exception as e:
-            print(paint(f"\n备份失败,已中止(绝不删未备份的):{s.sid}\n  {e}", "1;31", on))
-            if done:
-                print("已完成:" + ", ".join(done))
-            sys.exit(1)
+        dest = None
+        if backup:
+            try:
+                dest = backup_session(s)
+            except Exception as e:
+                print(paint(f"\n备份失败,已中止(不会删未备份的):{s.sid}\n  {e}", "1;31", on))
+                if done:
+                    print("已完成:" + ", ".join(done))
+                sys.exit(1)
         try:
             s.path.unlink()
         except OSError as e:
             print(paint(f"\n删除失败:{s.path}\n  {e}", "1;31", on))
-            print(f"备份已在:{dest}")
+            if dest:
+                print(f"备份已在:{dest}")
             sys.exit(1)
         done.append(s.sid)
-        print(f"  已删 {s.sid[:8]}  (备份 → {dest})")
-    print(f"\n完成:{len(done)} 个会话已备份并删除。")
-    print(paint(f"备份留在 {archive_dir()}(当保险)。要一次清掉全部备份:", "2", on))
-    print(paint("  cgr purge -f", "2", on))
+        print(f"  已删 {s.sid[:8]}" + (f"  (备份 → {dest})" if dest else "  (未备份)"))
+
+    print(f"\n完成:{len(done)} 个会话已删除。")
+    if backup:
+        print(paint(f"备份留在 {archive_dir()}(当保险)。要一次清掉全部备份:", "2", on))
+        print(paint("  cgr purge -f", "2", on))
+    else:
+        print(paint("⚠ 这次没备份,删了不可恢复。", "1;33", on))
 
 
 def cmd_purge(args, store: SessionStore):
@@ -1092,17 +1160,10 @@ def cmd_purge(args, store: SessionStore):
         print(f"  {p.stem[:8]}  {human_size(sz):>8}  {title}")
     print(f"合计 {human_size(total)}")
     if not args.force:
-        bits = ["cgr purge"] + [shlex.quote(r) for r in args.refs]
-        if args.older_than is not None:
-            bits += ["-n", str(args.older_than)]
-        bits.append("-f")
-        cmd = " ".join(bits)
-        print(paint("\n预览完成,还没删。等价命令:", "1;33", on))
-        print("  " + cmd)
-        if copy_to_clipboard(cmd):
-            print(paint("  (已复制到剪贴板,可直接粘贴)", "2", on))
-        if not _confirm(paint("要现在清除这些备份吗?[y/N] ", "1;33", on)):
-            print(paint("已取消,什么都没删。", "2", on))
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(paint("\n非交互终端,未删除。要删加 -f。", "1;33", on))
+            return
+        if not _confirm(paint("\n要现在清除这些备份吗?[y/N] ", "1;33", on), "已取消,什么都没删。"):
             return
 
     removed = set()
@@ -1125,6 +1186,76 @@ def cmd_purge(args, store: SessionStore):
     print(f"\n已清除 {len(removed)} 个备份。")
 
 
+def cmd_dedupe(args, store: SessionStore):
+    """同一会话 id 有多个副本时,保留最新一份,其余移入归档(不删除)。"""
+    alls = SessionStore(include_archived=args.archived, dedupe=False).sessions()
+    groups: dict[str, list[Session]] = defaultdict(list)
+    for s in alls:
+        groups[s.sid].append(s)
+    dupes = {sid: g for sid, g in groups.items() if len(g) > 1}
+    if not dupes:
+        print("没有重复会话(每个 id 只有一份)")
+        return
+
+    on = color_enabled()
+    extra: list[Session] = []
+    print(paint(f"发现 {len(dupes)} 组重复会话(同 id 落在多个项目文件夹):", "1;33", on))
+    for sid, g in sorted(dupes.items()):
+        g.sort(key=lambda s: (s.end or s.start or dt.datetime.min, not s.archived), reverse=True)
+        keep = g[0]
+        if not keep.title_explicit:
+            for s in g[1:]:
+                if s.title_explicit:
+                    keep.title = s.title  # 借用另一份的自定义标题来显示
+                    break
+        print(f"\n  [{sid[:8]}]  {keep.title}")
+        print(paint(f"    保留  {fmt_time(keep.end or keep.start)}  {keep.path.parent.name}", "2", on))
+        for s in g[1:]:
+            extra.append(s)
+            print(paint(f"    移走  {fmt_time(s.end or s.start)}  {s.path.parent.name}  ({human_size(s.size)})", "2", on))
+
+    dest_dir = archive_dir() / "_dupes"
+    print(paint(f"\n{len(extra)} 份多余副本会移到 {dest_dir}(保留,不删)", "1;33", on))
+    if not args.force:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(paint("\n非交互终端,未执行。要执行加 -f。", "1;33", on))
+            return
+        if not _confirm(paint("\n要现在执行吗?[y/N] ", "1;33", on)):
+            return
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for s in extra:
+        dest = dest_dir / f"{s.sid}.{_safe_name(s.path.parent.name)}.jsonl"
+        try:
+            shutil.copy2(s.path, dest)
+            s.path.unlink()
+            moved += 1
+            print(f"  已移走 {s.sid[:8]}  ({s.path.parent.name}) → {dest}")
+        except Exception as e:
+            print(paint(f"移走失败:{s.path}  {e}", "1;31", on))
+    print(f"\n完成:{moved} 份副本已移入归档(原样保留,需要可取回)。")
+
+
+def cmd_rename(args, store: SessionStore):
+    """给会话改名:向 jsonl 追加一条 custom-title 记录(与 Claude Code 自身改名同格式)。"""
+    s = resolve(args.ref, store)
+    title = flat(" ".join(args.title))
+    if not title:
+        die("新标题不能为空")
+    if s.archived:
+        die("这是归档副本,不能直接改名;请对活会话改名")
+    rec = {"type": "custom-title", "customTitle": title, "sessionId": s.sid}
+    with open(s.path, "rb+") as f:
+        f.seek(0, os.SEEK_END)
+        if f.tell() > 0:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":  # 保证追加不会挤到上一行
+                f.write(b"\n")
+        f.write((json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
+    print(f"已改名:[{s.sid[:8]}] → {title}")
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -1136,6 +1267,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("-l", "--limit", type=int, metavar="N", help="最多处理 N 个会话")
     common.add_argument("-j", "--json", action="store_true", help="机器可读输出")
     common.add_argument("-a", "--archived", action="store_true", help="把备份也纳入数据源")
+    common.add_argument("--color", dest="color", action="store_true", default=None, help="强制彩色输出")
+    common.add_argument("--no-color", dest="color", action="store_false", help="关闭彩色输出")
 
     p = argparse.ArgumentParser(
         prog="cgr",
@@ -1183,9 +1316,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-b", "--by", choices=["day", "project", "model", "tool"], help="按维度汇总")
     sp.set_defaults(func=cmd_stats)
 
-    sp = sub.add_parser("rm", aliases=SUBCOMMANDS["rm"], parents=[common], help="删除会话(默认 dry-run,删前自动备份)")
+    sp = sub.add_parser("rm", aliases=SUBCOMMANDS["rm"], parents=[common],
+                        help="删除会话(默认预览;交互下 y=直删 / n=删并备份)")
     sp.add_argument("refs", nargs="+")
-    sp.add_argument("-f", "--force", action="store_true", help="真的删(不给则只预览)")
+    sp.add_argument("-f", "--force", action="store_true", help="跳过交互直接删(不给则只预览)")
+    sp.add_argument("--no-backup", action="store_true", help="删除时不备份(配合 -f 用于脚本)")
     sp.set_defaults(func=cmd_rm)
 
     sp = sub.add_parser("purge", aliases=SUBCOMMANDS["purge"], parents=[common], help="清除备份(默认 dry-run)")
@@ -1193,6 +1328,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-n", "--older-than", type=int, metavar="DAYS", help="只清 N 天前的备份")
     sp.add_argument("-f", "--force", action="store_true", help="真的删(不给则只预览)")
     sp.set_defaults(func=cmd_purge)
+
+    sp = sub.add_parser("dedupe", aliases=SUBCOMMANDS["dedupe"], parents=[common],
+                        help="合并重复会话:同 id 多份时保留最新,其余移到归档(默认 dry-run)")
+    sp.add_argument("-f", "--force", action="store_true", help="真的移(不给则只预览)")
+    sp.set_defaults(func=cmd_dedupe)
+
+    sp = sub.add_parser("rename", aliases=SUBCOMMANDS["rename"], parents=[common],
+                        help="给会话改名(写入 custom-title)")
+    sp.add_argument("ref", help="id 前缀 / 列表序号 / 标题")
+    sp.add_argument("title", nargs="+", help="新标题")
+    sp.set_defaults(func=cmd_rename)
 
     return p
 
@@ -1207,11 +1353,18 @@ def main(argv=None):
     elif raw[0].startswith("-"):
         raw = ["list"] + raw
     elif raw[0] not in KNOWN_COMMANDS:
-        raw = (["show"] if raw[0].isdigit() else ["search"]) + raw
+        if raw[0].isdigit():
+            raw = ["show"] + raw                                    # 纯数字 → 序号,打开
+        elif re.fullmatch(r"[0-9a-fA-F]{6,}(-[0-9a-fA-F]+)*", raw[0]):
+            raw = ["show"] + raw                                    # 像会话 id 前缀 → 打开
+        else:
+            raw = ["search"] + raw                                  # 其他词 → 搜索
 
     args = build_parser().parse_args(raw)
     if not getattr(args, "func", None):
         args = build_parser().parse_args(["list"])
+    global _COLOR_MODE
+    _COLOR_MODE = getattr(args, "color", None)  # --color / --no-color 覆盖自动判断
     if not projects_dir().is_dir() and args.func is not cmd_purge:
         die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")
     store = SessionStore(include_archived=getattr(args, "archived", False))

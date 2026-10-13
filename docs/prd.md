@@ -32,8 +32,10 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 | `pick` | fzf 交互选择:Enter 打开 / Ctrl-R 续聊 / Ctrl-D 预览删除 |
 | `export <ref>` | 导出 md / txt / json |
 | `stats` | 用量统计,`--by day\|project\|model\|tool` |
-| `rm <ref...>` | 删除会话(默认 dry-run,删前强制备份) |
+| `rm <ref...>` | 删除会话(默认预览;交互 y=直删 / n=删并备份) |
 | `purge` | 清除备份(默认 dry-run) |
+| `dedupe` | 合并重复会话:同 id 多份时保留最新,其余移到归档(默认 dry-run) |
+| `rename <ref> <新标题>` | 给会话改名(向 jsonl 追加 custom-title 记录) |
 
 ### 全局参数(所有子命令一致)
 
@@ -47,7 +49,7 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 ## 已确认的产品决策
 
 - **核心是"用起来",不是"防丢"。** 防自动清理只需在 `~/.claude/settings.json` 设 `cleanupPeriodDays`(已设 3650,约 10 年),不需要为它写工具。工具的价值在搜索 / 阅读 / 统计。
-- **删除 = "看到内容再删"。** `rm` 默认只预览,加 `--force` 才真删;删除前**必须**先备份成功,备份失败立即中止、绝不删;没有 `--no-backup` 逃生口。
+- **删除 = "看到内容再删"。** `rm` 默认只预览;交互下 `y` = 直接删(不备份,会提示不可恢复)、`n` = 删并备份一份;非交互用 `-f`(默认备份)、`--no-backup` 才不备份。走备份时先备份成功再删原件,失败即中止。
 - **归档 = 原样复制 jsonl**(忠实、可还原),不是转 markdown。存到 `~/claude-archive/<项目>/<会话id>.jsonl`,配一个 `manifest.json`(日期存 manifest、不进路径)。
 - **`purge` 独立清备份**,默认 dry-run,支持 `--older-than`;默认不清"孤儿备份"(原件已删只剩备份的,恰恰最该留)。
 - **不做成本估算。** 用户走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱",算了是假数字。只报 token。
