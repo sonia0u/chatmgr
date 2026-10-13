@@ -148,7 +148,7 @@ cgr search <query> [--ignore-case | --case-sensitive] [--regex]
 
 命中行前的标签表示**这个词出现在哪类内容**里:`你`(你的输入)/ `Claude`(正文回复)/ `工具`(工具调用);`--all` 时还会出现 `思考` / `工具返回`。
 
-`--grep` 平铺时每行前面也带标题(如 `词 › assistant: …`)。`--json` 输出 `{query, title_matches, content_matches}`。
+`--grep` 平铺时每行前面也带标题(如 `词 › Claude: …`)。`--json` 输出 `{query, title_matches, content_matches}`。
 
 **搜完想直接打开**:结果里每个会话都带 `→ 打开 cgr <序号> · 续聊 cgr <序号> -r`;或加 `--pick` 直接进 fzf(Enter 打开 / Ctrl-R 续聊,只列命中的会话)。
 
@@ -187,7 +187,7 @@ cgr search 词 --all --grep      # 连工具返回一起搜,平铺
 cgr search 词 -p 项目 -s 3d     # 限定项目 + 近 3 天
 ```
 
-结果里每个会话都附 `→ claude --resume <id>`,可直接复制续聊。
+结果里每个会话都附 `→ 打开 cgr <序号> · 续聊 cgr <序号> -r`,可直接复制。
 
 ---
 

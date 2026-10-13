@@ -58,8 +58,8 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 - **`show` 默认隐藏 thinking 和工具返回**,`--full` 全显;自动上色并尊重 `NO_COLOR`;默认不分页(便于管道),`--pager` 才走 less;长行不硬截断。
 - **备份默认不参与搜索**,`--archived` 时才纳入并标注 `[已归档]`。
 - **`--resume` 闭环**:找到旧对话后能直接 `claude --resume` 接着聊。
-- **v1 范围**:`list / search / show / pick / export / stats / rm / purge` 八个命令一次做齐(共用同一解析层)。
-- **命令行要好敲(合用顺手)**:命令名 `cgr`;裸参数分派(`cgr 3` = 打开、`cgr 关键词` = 搜索、不带参数 = 列表);常用子命令有别名(`ls`/`s`/`o`/`st`/`e`/`d`/`p`);`pick` 用 fzf 一步挑;`list` 序号高亮、`search` 命中高亮;`show` 读完可一键续聊。
+- **v1 范围**:`list / search / show / pick / export / stats / rm / purge`,后续加入 `dedupe` / `rename`,共用同一解析层。
+- **命令行要好敲(合用顺手)**:命令名 `cgr`;裸参数分派(`cgr 3` = 打开、`cgr 关键词` = 搜索、不带参数 = 列表);别名只留 `pick`→`f`(其余命令敲全名);`pick` 用 fzf 一步挑;`list` 序号高亮、`search` 命中高亮;`show` 读完可一键续聊。
 
 ## 非目标(Non-goals)
 

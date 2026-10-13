@@ -39,7 +39,7 @@ python3 -m py_compile chatmgr.py    # 语法检查(本项目没有测试套件)
 cgr <命令> -h                        # 看某子命令的全部参数
 ```
 
-子命令:`list / search / show / pick / export / stats / rm / purge / dedupe / rename`,各有常用别名(见下)。
+子命令:`list / search / show / pick / export / stats / rm / purge / dedupe / rename`(`pick` 有别名 `f`,其余一律敲全名)。
 
 **裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`(当序号);形如会话 id 前缀(≥6 位十六进制,可带 `-`)→ `show`;其他词 → `search`;已知命令/别名 → 原样。**推论**:`search` 的动词只有在"词在前"时才能省(`cgr yazi --grep`),写成 `cgr --grep yazi` 会走 `list` 而报错。
 
