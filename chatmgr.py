@@ -54,17 +54,17 @@ def empty_tokens() -> dict:
     return {k: 0 for k in TOKEN_KEYS}
 
 
-# 子命令别名(第一项用于补全展示,别名让人少敲字)
+# 子命令别名:只留真正会用的(pick→f);其余一律敲全名,帮助更清爽
 SUBCOMMANDS = {
-    "list": ["ls", "l"],
-    "search": ["s", "grep"],
-    "show": ["o", "cat"],
+    "list": [],
+    "search": [],
+    "show": [],
     "pick": ["f"],
-    "export": ["e"],
-    "stats": ["st", "stat"],
-    "rm": ["d", "del"],
-    "purge": ["p"],
-    "dedupe": ["dd"],
+    "export": [],
+    "stats": [],
+    "rm": [],
+    "purge": [],
+    "dedupe": [],
     "rename": [],
 }
 KNOWN_COMMANDS = set(SUBCOMMANDS) | {a for al in SUBCOMMANDS.values() for a in al}
@@ -1233,7 +1233,7 @@ def cmd_rm(args, store: SessionStore):
         if s.archived:
             print(paint("      ⚠ 这是备份文件本身,不是活会话", "1;31", on))
 
-    backup = not getattr(args, "no_backup", False)  # 默认删前备份;--no-backup 或交互按 y 关掉
+    backup = not args.force  # -f = 直接删(不备份);交互下再由 y / n 决定
     if not args.force:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print(paint("\n非交互终端,未删除。要删加 -f。", "1;33", on))
@@ -1316,7 +1316,9 @@ def cmd_purge(args, store: SessionStore):
         sz = p.stat().st_size
         total += sz
         e = by_id.get(p.stem)
-        title = e.get("title", "") if e else ""
+        title = flat(e.get("title", "")) if e else ""
+        if not title:  # 没 manifest 记录(如 dedupe 移来的)——现读文件取标题
+            title = load_session(p, archived=True).title
         print(f"  {p.stem[:8]}  {human_size(sz):>8}  {title}")
     print(f"合计 {human_size(total)}")
     if not args.force:
@@ -1497,8 +1499,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("rm", aliases=SUBCOMMANDS["rm"], parents=[common],
                         help="删除会话(默认预览;交互下 y=直删 / n=删并备份)")
     sp.add_argument("refs", nargs="*", help="会话(id 前缀/序号/标题);也可不给,改用 -p 按项目选")
-    sp.add_argument("-f", "--force", action="store_true", help="跳过交互直接删(不给则只预览)")
-    sp.add_argument("--no-backup", action="store_true", help="删除时不备份(配合 -f 用于脚本)")
+    sp.add_argument("-f", "--force", action="store_true", help="跳过交互直接删(不备份);不给则只预览")
     sp.set_defaults(func=cmd_rm)
 
     sp = sub.add_parser("purge", aliases=SUBCOMMANDS["purge"], parents=[common], help="清除备份(默认 dry-run)")
