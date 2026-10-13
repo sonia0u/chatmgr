@@ -753,10 +753,20 @@ def sess_to_dict(s: Session) -> dict:
 # ---------------------------------------------------------------- 表格
 
 
-def print_table(rows: list[list[str]]):
+def print_table(rows: list[list[str]], max_width: int | None = None):
     widths = [max(dwidth(r[i]) for r in rows) for i in range(len(rows[0]))]
+    gaps = [2] * (len(widths) - 1)
+    if max_width is not None:
+        # 塞不下就先把列间距由 2 收到 1(最多省 6~7 列),优先保证不折行 —— 不缩列内容,标题长度不受影响
+        while sum(widths) + sum(gaps) > max_width and any(g == 2 for g in gaps):
+            gaps[gaps.index(2)] = 1
     for r in rows:
-        print("  ".join(pad(c, widths[i]) for i, c in enumerate(r)).rstrip())
+        out = []
+        for i, c in enumerate(r):
+            out.append(pad(c, widths[i]))
+            if i < len(gaps):
+                out.append(" " * gaps[i])
+        print("".join(out).rstrip())
 
 
 # ---------------------------------------------------------------- 子命令
@@ -789,12 +799,14 @@ def cmd_list(args, store: SessionStore):
                 human_tokens(s.tok_io),
             ]
         )
-    print_table(rows)
+    print_table(rows, shutil.get_terminal_size((120, 24)).columns)
     print(f"\n{len(sessions)} 个会话   (tok = input+output)")
     if store.duplicates:
         print(paint(
             f"⚠ 有 {store.duplicates} 份重复会话(同一 id 落在多个项目文件夹,内容不一致)"
             f",已只保留最新的一份", "2", on))
+    if sys.stdout.isatty():  # 只在人看的终端里提示;管道/脚本不打扰
+        print(paint("提示:要筛选 / 打开 / 改名 / 删 → cgr f", "2", on))
 
 
 def cmd_search(args, store: SessionStore):

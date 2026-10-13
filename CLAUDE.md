@@ -99,6 +99,7 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 - `show` 在交互终端下读完会问一句"要续聊吗",确认即 `claude --resume`;非 TTY / `--json` / `--pager` 时不问。
 - 项目(文件夹)配色:`project_colors()` 按项目名排序分配 `PROJECT_COLORS` 调色板(`38;5;N` 256 色),出现在 `list` / `pick` / `search` / `show` 的项目列;以**完整会话列表**为基准,所以各命令、各筛选下同一项目颜色一致。改配色改这个常量即可。
 - 交互输入用 `input()`;模块顶部 `import readline`(try/except)让方向键/行编辑/历史可用 —— Python 脚本默认不加载 readline,不加的话方向键会变成 `^[[D` 之类的转义串。
+- `print_table()` 的**列内容宽度固定**(`list` 里项目 22 / 标题 34),但塞不下时会把**列间距从 2 收到 1**(传 `max_width`,最多省 6~7 列),**不缩列内容**。整行超过终端会折行,把"消息"/`tok` 的尾巴(如 `k`)甩到下一行,极易误读成"最右边多出一列数字"——所以宁可收间距也要避免折行。别改成缩标题宽度(试过,标题太短,用户不接受)。
 - 输出:尊重 `NO_COLOR`,非 TTY 不上色;`--color` / `--no-color` 强制覆盖(模块级 `_COLOR_MODE`,由 `main()` 设置);默认不分页(便于管道给 `less`/`grep`),`--pager` 才走 `less`;长行不硬截断,交给终端换行。
 
 ## 工作说明

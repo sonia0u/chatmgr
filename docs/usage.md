@@ -77,6 +77,8 @@ cgr list [--project PROJECT] [--since WHEN] [--until WHEN] [--limit N] [--json] 
 
 同一会话 id 若落在多个项目文件夹(例如在不同目录 resume 过),**只显示最新的一份**,并在末尾提示重复数量。
 
+交互终端下末尾会提示 `提示:要筛选 / 打开 / 改名 / 删 → cgr f` —— `list` 是"看",要操作就用 `pick`。
+
 **完整 → 简写**
 
 | 完整写法 | 简写 | 说明 |
