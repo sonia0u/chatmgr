@@ -16,6 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `CLAUDE.md` | 本指引(逐条维护,改约定要同步这里) |
 | `docs/prd.md` | 需求 / 功能规格 / 已确认的产品决策 |
 | `docs/usage.md` | 命令手册(每个子命令的详细用法) |
+| `tests/test_chatmgr.py` | 最小测试(标准库 unittest;数据全在临时目录,不碰真实记录) |
 
 **仓库外(运行时会访问)**
 
@@ -35,7 +36,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cgr <命令>                          # ~/.local/bin/cgr 已软链到本文件
 python3 chatmgr.py <命令>           # 或直接跑
 cgr                                 # 不带子命令=list;cgr 3=show 3;cgr 关键词=search
-python3 -m py_compile chatmgr.py    # 语法检查(本项目没有测试套件)
+python3 -m py_compile chatmgr.py    # 语法检查
+python3 tests/test_chatmgr.py        # 跑测试(标准库 unittest)
 cgr <命令> -h                        # 看某子命令的全部参数
 ```
 
@@ -43,7 +45,7 @@ cgr <命令> -h                        # 看某子命令的全部参数
 
 **裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`(当序号);形如会话 id 前缀(≥6 位十六进制,可带 `-`)→ `show`;其他词 → `search`;已知命令/别名 → 原样。**推论**:`search` 的动词只有在"词在前"时才能省(`cgr yazi --grep`),写成 `cgr --grep yazi` 会走 `list` 而报错。
 
-**验证靠手动跑**,没有自动化测试。改完后至少跑一遍 `list` 和目标子命令。注意:会话数 = jsonl 文件数 **减去重复 id**(同一会话可能在多个项目文件夹各有一份,见下;`list` 会提示"重复会话")。
+**验证 = 跑测试 + 手动跑关键命令。** `python3 tests/test_chatmgr.py`(标准库 unittest,桩数据全在临时目录)覆盖解析 / `resolve` / 以及破坏性命令"非 TTY 不动文件"的安全底线;但它不覆盖观感与交互,**改完仍要实跑一遍 `list` 和目标子命令**。注意:会话数 = jsonl 文件数 **减去重复 id**(同一会话可能在多个项目文件夹各有一份,见下;`list` 会提示"重复会话")。
 
 ## 安全测试(重要)
 
@@ -105,8 +107,8 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 
 改这个仓库时的固定动作:
 
-1. **改代码** → `python3 -m py_compile chatmgr.py` 语法检查 → 实跑 `list` 和目标子命令(本项目没有自动化测试,验证靠手动跑)。
-2. **测破坏性命令**(`rm` / `purge`)只在临时目录做,见「安全测试」一节,不要碰真实数据。
+1. **改代码** → `python3 -m py_compile chatmgr.py` 语法检查 → `python3 tests/test_chatmgr.py` 跑测试 → 实跑 `list` 和目标子命令(测试只管逻辑,观感/交互还得手验)。
+2. **测破坏性命令**(`rm` / `purge`)只在临时目录做,见「安全测试」一节,不要碰真实数据;`tests/` 里的安全用例用的就是同一套环境变量。
 3. **加文件/文档** 时,更新上面「标准文件路径」表;新文档放 `docs/`。
 4. **提交**:一笔一个逻辑改动,提交信息写「为什么」不写「改了什么」。
 5. **守住边界**:未经用户明确同意**不要提交**,也不要擅自改 `~/.claude/settings.json` 之类的用户环境文件。
