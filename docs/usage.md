@@ -308,7 +308,7 @@ cgr export 词 -f json -o s.json        # 按标题导出 JSON
 cgr stats [--by {day,project,model,tool}] [全局参数]
 ```
 
-**说明** 不带 `--by` 给总览:会话数、问答数、时间跨度、五类 token 合计(input / output / cache_read / cache_creation / thinking)、模型与工具分布。**不计算成本**(本项目走订阅代理,无单 token 价格)。
+**说明** 不带 `--by` 给总览:会话数、问答数、时间跨度、各 token 类型合计(**为 0 的类型不列出**)、模型与工具分布。`cache_read` 是每轮重复回读的缓存上下文,累加后远大于 `input`/`output`,**不等于新增用量**。**不计算成本**(本项目走订阅代理,无单 token 价格)。
 
 **完整 → 简写**
 

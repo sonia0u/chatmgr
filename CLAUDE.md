@@ -74,7 +74,7 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 - **标题**优先级:最新的 `custom-title` > `ai-title` > `agent-name` > 首句真人输入。
 - **真人输入极少**:user 记录里绝大多数是 `tool_result`。判定逻辑见 `_user_text()` —— content 为字符串、非 `isMeta`、且不以 `<` / `system-reminder` / `Caveat:` 开头。
 - **噪音**:`attachment` 记录里大量是 `total_tokens_reminder`;assistant 记录里有 `thinking`。搜索默认排除工具返回和 thinking(`--all` 才纳入)。
-- **token** 从 assistant 的 `message.usage` 累加五类:input / output / cache_read / cache_creation / thinking。`list` 显示的 `tok = input+output`,**不含 cache**(cache_read 是重复上下文,计进去会撑爆数字)。
+- **token** 从 assistant 的 `message.usage` 累加五类:input / output / cache_read / cache_creation / thinking。`list` 显示的 `tok = input+output`,**不含 cache**(cache_read 是重复上下文,计进去会撑爆数字)。`show` 头部和 `stats` 总览**只列非 0 的类型**(代理不报 cache_creation / thinking 时它们恒为 0,列出来像坏了);`stats` 里当 cache_read 大于 input+output 时再附一句说明它是重复回读。
 - **jsonl 是 Claude Code 内部格式,无契约**,随版本变化。所有解析一律逐行 `try/except`、未知 `type` 忽略(见 `iter_records`)。不要硬编码"必需"字段。
 - **同一会话 id 可能落在多个项目文件夹**(在不同 cwd 下 resume 过,或项目文件夹被复制),两份内容会不一致。`SessionStore._discover()` 按 id 去重:保留最后活动最新、且优先活会话的那一份;被丢弃的份数记在 `store.duplicates`,由 `list` 提示。
 

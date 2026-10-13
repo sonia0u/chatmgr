@@ -654,12 +654,15 @@ def render_session(s: Session, full: bool, on: bool, proj_color: str = "36") -> 
     out.append(f"项目: {paint(s.project, proj_color, on)}")
     out.append(f"时间: {span}    会话: {s.sid}")
     toks = s.tokens
-    out.append(
-        f"消息: {s.prompts} 问 / {s.replies} 答    "
-        f"token: in {human_tokens(toks['input'])} / out {human_tokens(toks['output'])} / "
-        f"cache_r {human_tokens(toks['cache_read'])} / cache_w {human_tokens(toks['cache_creation'])} / "
-        f"thinking {human_tokens(toks['thinking'])}"
-    )
+    # 只列非 0 的类型:某些代理不报 cache_creation / thinking,恒为 0 会像"坏了"
+    tok_parts = [f"in {human_tokens(toks['input'])}", f"out {human_tokens(toks['output'])}"]
+    if toks["cache_read"]:
+        tok_parts.append(f"cache_r {human_tokens(toks['cache_read'])}")
+    if toks["cache_creation"]:
+        tok_parts.append(f"cache_w {human_tokens(toks['cache_creation'])}")
+    if toks["thinking"]:
+        tok_parts.append(f"thinking {human_tokens(toks['thinking'])}")
+    out.append(f"消息: {s.prompts} 问 / {s.replies} 答    token: " + " / ".join(tok_parts))
     if s.models:
         out.append("模型: " + ", ".join(f"{m}({c})" for m, c in s.models.most_common()))
     out.append("")
@@ -1197,6 +1200,7 @@ def cmd_stats(args, store: SessionStore):
         return
 
     # 总览
+    on = color_enabled()
     span_start = min((s.start for s in sessions if s.start), default=None)
     span_end = max((s.end for s in sessions if s.end), default=None)
     print(f"会话: {len(sessions)}    消息: {sum(s.prompts for s in sessions)} 问 / "
@@ -1205,9 +1209,15 @@ def cmd_stats(args, store: SessionStore):
     print()
     rows = [["token 类型", "合计"]]
     for k in TOKEN_KEYS:
-        rows.append([k, human_tokens(total_tokens[k])])
+        if total_tokens[k]:  # 为 0 的类型不占行(代理不报 cache_creation / thinking 时免得像坏了)
+            rows.append([k, human_tokens(total_tokens[k])])
     rows.append(["input+output", human_tokens(total_tokens["input"] + total_tokens["output"])])
     print_table(rows)
+    zero = [k for k in TOKEN_KEYS if not total_tokens[k]]
+    if zero:
+        print(paint("(为 0 未列出:" + " / ".join(zero) + ")", "2", on))
+    if total_tokens["cache_read"] > total_tokens["input"] + total_tokens["output"]:
+        print(paint("cache_read 是每轮重复回读的缓存上下文,累加后远大于 input/output,不等于新增用量。", "2", on))
     print()
     print("模型: " + (", ".join(f"{m}({c})" for m, c in models.most_common()) or "—"))
     print("工具: " + (", ".join(f"{t}({c})" for t, c in tools.most_common(10)) or "—"))
