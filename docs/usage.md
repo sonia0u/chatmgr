@@ -13,6 +13,14 @@ cgr <命令> -h                        # 某子命令的全部参数
 
 `cgr` 和 `chatmgr` 是同一个文件,两个名字都能用。
 
+## 怎么读这份文档
+
+- **凡是占位符,都要替换成你自己的值**。两种写法:
+  - **语法里的尖括号**:`<命令>`(子命令)、`<ref>`(会话,见「[指认会话(ref)](#指认会话ref)」)、`<词>`(搜索关键词)、`<项目>`(项目名)、`<N>`(数字)。
+  - **例子里的裸词**:统一只用 **`词`**(搜索关键词)和 **`项目`**(项目名)—— 比如 `cgr 词` 你实际敲 `cgr 想搜的词`。
+- **`-x` / `--xxx` 是选项,照敲即可**,不是占位符。
+- 代码块里的命令都是**原样敲**(前面没有 `$` 提示符)。
+
 ## 命令一览
 
 | 完整命令 | 简写 | 作用 |
@@ -20,7 +28,7 @@ cgr <命令> -h                        # 某子命令的全部参数
 | `cgr list` | `cgr` | 列出会话 |
 | `cgr search <词>` | `cgr <词>` | 搜索内容 |
 | `cgr show <ref>` | `cgr <序号>` | 阅读一个会话 |
-| `cgr pick [关键词]` | `cgr f [关键词]` | fzf 交互选择 |
+| `cgr pick [词]` | `cgr f` | fzf 交互选择(可加 `词` 初筛) |
 | `cgr export <ref>` | — | 导出 md / txt / json |
 | `cgr stats` | — | 用量统计 |
 | `cgr rm <ref...>` | — | 删除会话(默认预览) |
@@ -28,7 +36,7 @@ cgr <命令> -h                        # 某子命令的全部参数
 | `cgr dedupe` | — | 合并重复会话(同 id 多份时保留最新,其余移到归档) |
 | `cgr rename <ref> <新标题>` | — | 给会话改名 |
 
-**裸参数分派**:`cgr`(无参)=列表;`cgr 3`(纯数字)=打开第 3 个;`cgr 9852ae3a`(像 id 前缀)=打开该会话;`cgr yazi`(其他词)=搜索 yazi。
+**裸参数分派**:`cgr`(无参)=列表;`cgr 3`(纯数字)=打开第 3 个;`cgr 9852ae3a`(像 id 前缀)=打开该会话;`cgr 词`(其他词)=搜索「词」。
 
 ## 通用规则(所有命令适用)
 
@@ -40,13 +48,13 @@ cgr <命令> -h                        # 某子命令的全部参数
 |---|---|---|---|
 | **列表序号** | 一个数字 | `cgr` 列表最左的 `#` 列 | `cgr 3` |
 | **id 前缀** | 一串十六进制 | `show` 头部那行 `会话: 9852ae3a-…` 的开头几位(≥6 位) | `cgr 9852ae3a` |
-| **标题片段** | 标题里的一段字 | `cgr` 列表的「标题」列 | `cgr show 配置yazi` |
+| **标题片段** | 标题里的一段字 | `cgr` 列表的「标题」列 | `cgr show 词` |
 
 **能不能省掉动词?**(即直接 `cgr <ref>`)
 
 - 数字序号 → **能**:`cgr 3` 等于 `cgr show 3`
 - id 前缀 → **能**:`cgr 9852ae3a` 会被认成 id(≥6 位十六进制自动走 show)
-- 标题片段 → **不能**:`cgr 配置yazi` 被当成**搜索**;要打开得写 `cgr show 配置yazi` 
+- 标题片段 → **不能**:`cgr 词` 被当成**搜索**;要打开得写 `cgr show 词` 
 
 **其它规则**
 
@@ -97,13 +105,13 @@ cgr list [--project PROJECT] [--since WHEN] [--until WHEN] [--limit N] [--json] 
 | 完整写法 | 简写 | 说明 |
 |---|---|---|
 | `cgr list` | `cgr` | 列出所有会话;不带子命令时默认就是它 |
-| `cgr list --project yazi` | `cgr -p yazi` | `-p`:只看某个项目;**动词也可省** |
+| `cgr list --project 项目` | `cgr -p 项目` | `-p`:只看某个项目;**动词也可省** |
 | `cgr list --since 7d` | `cgr -s 7d` | `-s`:只看某时间之后的(`7d`=近 7 天) |
 | `cgr list --limit 5` | `cgr -l 5` | `-l`:最多列几个 |
 | `cgr list --json` | `cgr -j` | `-j`:输出 JSON(给脚本 / jq 用) |
 | `cgr list --archived` | `cgr -a` | `-a`:连归档备份一起列(标 [已归档]) |
-| `cgr list --project yazi --since 7d` | `cgr -p yazi -s 7d` | 组合 |
-| `cgr list --project yazi --limit 5 --json` | `cgr -p yazi -l 5 -j` | 最短形式 |
+| `cgr list --project 项目 --since 7d` | `cgr -p 项目 -s 7d` | 组合 |
+| `cgr list --project 项目 --limit 5 --json` | `cgr -p 项目 -l 5 -j` | 最短形式 |
 
 > `list` 的动词可以省(它本来就是默认,连同"首参以 `-` 开头"也走 list);`show`→`cgr <序号>`、`search`→`cgr <词> [选项]`(**词要写在最前**)同理。其余命令(`export` / `stats` / `rm` / `purge` / `dedupe` / `rename`)没有默认,动词不能省。
 
@@ -111,7 +119,7 @@ cgr list [--project PROJECT] [--since WHEN] [--until WHEN] [--limit N] [--json] 
 
 ```bash
 cgr                        # = cgr list
-cgr -p yazi                # 只看项目名含 yazi 的
+cgr -p 项目                # 只看项目名含「项目」的
 cgr -s 7d -l 5             # 最近 7 天,前 5 个
 cgr -a                     # 连备份一起列(带 [已归档])
 cgr -j | jq '.[].title'    # 只取标题(JSON 喂给 jq)
@@ -140,12 +148,12 @@ cgr search <query> [--ignore-case | --case-sensitive] [--regex]
 
 命中行前的标签表示**这个词出现在哪类内容**里:`你`(你的输入)/ `Claude`(正文回复)/ `工具`(工具调用);`--all` 时还会出现 `思考` / `工具返回`。
 
-`--grep` 平铺时每行前面也带标题(如 `配置yazi › assistant: …`)。`--json` 输出 `{query, title_matches, content_matches}`。
+`--grep` 平铺时每行前面也带标题(如 `词 › assistant: …`)。`--json` 输出 `{query, title_matches, content_matches}`。
 
 **搜完想直接打开**:结果里每个会话都带 `→ 打开 cgr <序号> · 续聊 cgr <序号> -r`;或加 `--pick` 直接进 fzf(Enter 打开 / Ctrl-R 续聊,只列命中的会话)。
 
 **命中太多看不全**:默认每组每个会话只展开 5 处。截断处会打印**完整可复制的命令**,如
-`… 另有 243 处。全看:cgr search yazi --max-hits 0`(你加过的筛选也会带上)。等价的其它办法:
+`… 另有 243 处。全看:cgr search 词 --max-hits 0`(你加过的筛选也会带上)。等价的其它办法:
 - `--max-hits 0` —— **不限**,全部展开(仍是分组、带标题)
 - `--grep` —— 平铺全部命中,每行带标题,适合 `| less -R` 或 `> 结果.txt`
 - 配合 `-p 项目名` 缩小范围
@@ -154,29 +162,29 @@ cgr search <query> [--ignore-case | --case-sensitive] [--regex]
 
 | 完整写法 | 简写 | 说明 |
 |---|---|---|
-| `cgr search yazi` | `cgr yazi` | 搜 yazi;省掉动词(词放最前) |
-| `cgr search --case-sensitive SSH` | `cgr SSH -c` | `-c`:区分大小写(默认忽略) |
-| `cgr search --role user 密钥` | `cgr 密钥 --role user` | `--role user`:只搜**你**说的话(`--role assistant` 则只搜 Claude) |
-| `cgr search --all timeout` | `cgr timeout --all` | `--all`:连**工具返回**和 **thinking** 一起搜(默认这些算噪音,不搜) |
-| `cgr search --grep yazi` | `cgr yazi --grep` | `--grep`:平铺输出,每行带标题(适合 `\| less -R`) |
-| `cgr search --context 30 yazi` | `cgr yazi --context 30` | `--context N`:命中处前后各留 N 字(默认 60) |
-| `cgr search --max-hits 0 yazi` | `cgr yazi --max-hits 0` | `--max-hits N`:每个会话最多显示几处;`0` = 不限,全展开 |
-| `cgr search --project markdown yazi` | `cgr yazi -p markdown` | `-p`:只在某个项目里搜 |
-| `cgr search --project markdown --regex 'a.*b'` | `cgr 'a.*b' --regex -p markdown` | `--regex`:把词当**正则**匹配 |
+| `cgr search 词` | `cgr 词` | 搜「词」;省掉动词(词放最前) |
+| `cgr search --case-sensitive 词` | `cgr 词 -c` | `-c`:区分大小写(默认忽略)—— 想只找 `SSH` 不含 `ssh` 时用它 |
+| `cgr search --role user 词` | `cgr 词 --role user` | `--role user`:只搜**你**说的话(`--role assistant` 则只搜 Claude) |
+| `cgr search --all 词` | `cgr 词 --all` | `--all`:连**工具返回**和 **thinking** 一起搜(默认这些算噪音,不搜) |
+| `cgr search --grep 词` | `cgr 词 --grep` | `--grep`:平铺输出,每行带标题(适合 `\| less -R`) |
+| `cgr search --context 30 词` | `cgr 词 --context 30` | `--context N`:命中处前后各留 N 字(默认 60) |
+| `cgr search --max-hits 0 词` | `cgr 词 --max-hits 0` | `--max-hits N`:每个会话最多显示几处;`0` = 不限,全展开 |
+| `cgr search --project 项目 词` | `cgr 词 -p 项目` | `-p`:只在某个项目里搜 |
+| `cgr search --project 项目 --regex 词` | `cgr 词 --regex -p 项目` | `--regex`:把 `词` 当**正则**匹配 |
 
 > **默认忽略大小写**:`--ignore-case`(`-i`)本来就是默认,加不加一个样;要**区分大小写**才加 `-c`。
 >
-> **省掉 `search` 时,词必须写在最前**(`cgr yazi --grep` ✓)。写成 `cgr --grep yazi` / `cgr -c SSH` 会被当成 **`list` 的参数**而报错 —— 裸参数规则是"首参以 `-` 开头 → `list`"。
+> **省掉 `search` 时,`词` 必须写在最前**(`cgr 词 --grep` ✓)。写成 `cgr --grep 词` / `cgr -c 词` 会被当成 **`list` 的参数**而报错 —— 裸参数规则是"首参以 `-` 开头 → `list`"。
 
 **例子**
 
 ```bash
-cgr yazi                        # = cgr search yazi
-cgr search -c SSH               # 只匹配大写
-cgr search '报错.*timeout' --regex    # 把词当正则
-cgr search 密钥 --role user      # 只在"我"说过的话里找
-cgr search timeout --all --grep  # 连工具返回一起搜,平铺
-cgr search yazi -p markdown -s 3d     # 限定项目 + 近 3 天
+cgr 词                          # = cgr search 词
+cgr search 词 -c                # 区分大小写(只匹配大小写一样的)
+cgr search 词 --regex           # 把词当正则
+cgr search 词 --role user       # 只在"我"说过的话里找
+cgr search 词 --all --grep      # 连工具返回一起搜,平铺
+cgr search 词 -p 项目 -s 3d     # 限定项目 + 近 3 天
 ```
 
 结果里每个会话都附 `→ claude --resume <id>`,可直接复制续聊。
@@ -202,13 +210,13 @@ cgr show <ref> [--full] [--pager] [--resume] [--json] [全局参数]
 | `cgr show --resume 3` | `cgr 3 -r` | `-r`:直接 `claude --resume` 接着聊 |
 | `cgr show --pager 3` | `cgr 3 --pager` | `--pager`:用 `less` 分页翻看 |
 | `cgr show --json 3` | `cgr 3 -j` | `-j`:输出 JSON(给脚本) |
-| `cgr show 配置yazi --full --pager` | `cgr 配置yazi -f --pager` | 按标题 + 组合 |
+| `cgr show 词 --full --pager` | `cgr 词 -f --pager` | 按标题 + 组合 |
 
 **例子**
 
 ```bash
 cgr 3                 # 打开第 3 个
-cgr 配置yazi          # 用标题
+cgr 词                # 用标题片段
 cgr 3 -f              # 全显(含思考、工具返回)
 cgr 3 -r              # 直接接着聊
 cgr 3 --pager         # 长会话翻页
@@ -221,10 +229,10 @@ cgr 3 --pager         # 长会话翻页
 **完整语法**
 
 ```bash
-cgr pick [关键词] [全局参数]     # 别名 cgr f;给了关键词就填进搜索框初筛
+cgr pick [词] [全局参数]        # 最常用就是 cgr f(不给词);给了词就填进搜索框初筛
 ```
 
-**说明** 用 `fzf` 把所有会话列成一个**可搜索的清单**,选中后直接打开——省掉"先 `list` 看序号,再 `show 3`"两步。右侧实时预览光标所在会话的内容。给个关键词(`cgr f yazi`)会把 fzf 的搜索框**预填**成它,直接就是筛好的。`cgr search <词> --pick` 则只把**搜到的会话**送进来挑。
+**说明** 用 `fzf` 把所有会话列成一个**可搜索的清单**,选中后直接打开——省掉"先 `list` 看序号,再 `show 3`"两步。右侧实时预览光标所在会话的内容。给个关键词(`cgr f 词`)会把 fzf 的搜索框**预填**成它,直接就是筛好的。`cgr search <词> --pick` 则只把**搜到的会话**送进来挑。
 
 ```
   搜索:  [ 可直接打字过滤 ]                  ┌──────────────────────────┐
@@ -236,7 +244,7 @@ cgr pick [关键词] [全局参数]     # 别名 cgr f;给了关键词就填进�
                              ↑ 右边实时预览当前光标所在会话
 ```
 
-左上角**`搜索 >` 框就是模糊过滤**:打字即筛选(匹配日期/项目/标题/消息数那一列),空白则显示全部;`Esc` 或 `Ctrl-U` 清空。上方 `命中/总数` 是匹配计数。所以敲 `yazi` 就只剩含 yazi 的会话。列表行带颜色(每个项目一色),**右侧预览与直接跑 `cgr show` 完全一致(带颜色)**。
+左上角**`搜索 >` 框就是模糊过滤**:打字即筛选(匹配日期/项目/标题/消息数那一列),空白则显示全部;`Esc` 或 `Ctrl-U` 清空。上方 `命中/总数` 是匹配计数。所以敲 `词` 就只剩含它的会话。列表行带颜色(每个项目一色),**右侧预览与直接跑 `cgr show` 完全一致(带颜色)**。
 
 **前提**:它是**交互式**的,必须在真终端里跑;在脚本/管道里调用会直接报错退出(不会卡死等 fzf)。
 
@@ -247,8 +255,8 @@ cgr pick [关键词] [全局参数]     # 别名 cgr f;给了关键词就填进�
 | 完整写法 | 简写 | 说明 |
 |---|---|---|
 | `cgr pick` | `cgr f` | 子命令别名 |
-| `cgr pick yazi` | `cgr f yazi` | 关键词预填进 fzf 搜索框 |
-| `cgr pick --project yazi` | `cgr f -p yazi` | 全局筛选可组合 |
+| `cgr pick 词` | `cgr f 词` | 关键词预填进 fzf 搜索框 |
+| `cgr pick --project 项目` | `cgr f -p 项目` | 全局筛选可组合 |
 | `cgr pick --archived` | `cgr f -a` | 连备份一起挑 |
 
 **按键**
@@ -278,7 +286,6 @@ cgr export <ref> [--format {md,txt,json}] [--out FILE] [--full] [--pager] [全�
 | 完整写法 | 简写 | 说明 |
 |---|---|---|
 | `cgr export --format md 3` | `cgr export -f md 3` | `-f`:导出格式 md / txt / json |
-| `cgr export --format json 3` | `cgr export -f json 3` | 组合 |
 | `cgr export --out 对话.md 3` | `cgr export 3 -o 对话.md` | `-o`:写到文件(不给则打到终端) |
 | `cgr export --full --format md 3` | `cgr export 3 --full -f md` | `--full`:连思考 / 工具返回一起导出 |
 | `cgr export --out 对话.md --format json 3` | `cgr export 3 -f json -o 对话.md` | 最短形式 |
@@ -288,7 +295,7 @@ cgr export <ref> [--format {md,txt,json}] [--out FILE] [--full] [--pager] [全�
 ```bash
 cgr export 3                          # markdown 打到终端
 cgr export 3 -o 对话.md                # 写成文件
-cgr export 配置yazi -f json -o s.json      # 按标题导出 JSON
+cgr export 词 -f json -o s.json        # 按标题导出 JSON
 ```
 
 ---
@@ -333,7 +340,7 @@ cgr rm <ref...> [--force] [全局参数]
 
 **说明** **默认只预览**(列出将删的:标题、项目、时间、大小、首句),**不会直接删**。
 
-**删什么**:给会话 refs(如 `cgr rm 3 5 8`),或**不给 refs、用 `-p` 按项目批量删**(可多选:`cgr rm -p yazi -p ob笔记`,或 `cgr rm -p yazi,ob笔记`)。两边都不给会报错,不会误删全部。
+**删什么**:给会话 refs(如 `cgr rm 3 5 8`),或**不给 refs、用 `-p` 按项目批量删**(可多选:`cgr rm -p 项目1 -p 项目2`,或 `cgr rm -p 项目1,项目2`)。两边都不给会报错,不会误删全部。
 
 - **交互终端**:预览后问一句,三选:
   - `y` = **直接删**(不备份)
@@ -350,8 +357,8 @@ cgr rm <ref...> [--force] [全局参数]
 | `cgr rm --force 3` | `cgr rm -f 3` | `-f`:跳过交互,**直接删**(不备份) |
 | `cgr rm 3 5 8` | `cgr rm 3 5 8` | 批量(仍会问 y / n) |
 | `cgr rm --force 3 5 8` | `cgr rm 3 5 8 -f` | 批量直接删 |
-| `cgr rm --project yazi --force` | `cgr rm -p yazi -f` | 按项目批量删 |
-| `cgr rm --project yazi --project ob笔记 --force` | `cgr rm -p yazi -p ob笔记 -f` | 多项目一起删 |
+| `cgr rm --project 项目 --force` | `cgr rm -p 项目 -f` | 按项目批量删 |
+| `cgr rm --project 项目1 --project 项目2 --force` | `cgr rm -p 项目1 -p 项目2 -f` | 多项目一起删 |
 
 **例子**
 
@@ -422,7 +429,7 @@ cgr rename <ref> [新标题] [全局参数]     # 不给标题则交互式提问
 不给新标题时会**提示输入新标题** —— `cgr f` 里按 `Ctrl-E` 走的就是这条。
 
 ```bash
-cgr rename 3 修 yazi 配置              # 直接给新标题
+cgr rename 3 新标题                    # 直接给新标题
 cgr rename 9852ae3a "整理笔记"         # 也可以按 id 前缀
 cgr rename 3                           # 不给标题 → 交互式输入
 ```
@@ -431,14 +438,15 @@ cgr rename 3                           # 不给标题 → 交互式输入
 
 ## 常见任务速查
 
-| 完整写法 | 简写 | 场景 |
-|---|---|---|
-| `cgr list` | `cgr` | 看有哪些会话 |
-| `cgr pick` | `cgr f` | 交互浏览,选中即打开 |
-| `cgr search yazi` | `cgr yazi` | 找"上次在哪聊过 yazi" |
-| `cgr show 3` | `cgr 3` | 读第 3 个会话 |
-| `cgr show --resume 3` | `cgr 3 -r` | 读完接着聊 |
-| `cgr export 3 --out 对话.md` | `cgr export 3 -o 对话.md` | 导出存档 |
-| `cgr stats --by project` | `cgr stats -b project` | 各项目用量 |
-| `cgr rm 3` | `cgr rm 3` | 预览删除 |
-| `cgr rm --force 3` | `cgr rm -f 3` | 直接删(不备份) |
+| 命令 | 场景 |
+|---|---|
+| `cgr` | 看有哪些会话 |
+| `cgr f` | 交互浏览,选中即打开 |
+| `cgr 词` | 找"上次在哪聊过某词" |
+| `cgr 3` | 读第 3 个会话 |
+| `cgr 3 -r` | 读完接着聊 |
+| `cgr export 3 -o 对话.md` | 把第 3 个会话导出成文件 `对话.md` |
+| `cgr stats -b project` | 各项目用量 |
+| `cgr rename 3 新标题` | 给会话改名(`cgr f` 里按 `Ctrl-E` 也行) |
+| `cgr rm 3` | 预览删除(再按 y / n) |
+| `cgr rm 3 -f` | 直接删(不备份) |
