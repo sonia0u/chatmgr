@@ -47,6 +47,23 @@ def archive_dir() -> Path:
     return Path(os.environ.get("CHATMGR_ARCHIVE_DIR") or (Path.home() / "claude-archive"))
 
 
+def dupes_dir() -> Path:
+    return archive_dir() / "_dupes"
+
+
+def archive_files() -> list[Path]:
+    """归档里的**备份**文件,不含 dedupe 挪进来的重复副本(<归档>/_dupes/)。
+
+    副本是"刻意保留、不删"的兜底,不该被当成备份:否则 purge 会把它一并清掉。
+    要清副本得自己动手 rm -r <归档>/_dupes。
+    """
+    ad = archive_dir()
+    if not ad.is_dir():
+        return []
+    dupes = dupes_dir()
+    return [p for p in sorted(ad.glob("*/*.jsonl")) if p.parent != dupes]
+
+
 TOKEN_KEYS = ("input", "output", "cache_read", "cache_creation", "thinking")
 
 
@@ -435,10 +452,8 @@ class SessionStore:
             for p in sorted(pd.glob("*/*.jsonl")):
                 out.append(load_session(p, archived=False))
         if self.include_archived:
-            ad = archive_dir()
-            if ad.is_dir():
-                for p in sorted(ad.glob("*/*.jsonl")):
-                    out.append(load_session(p, archived=True))
+            for p in archive_files():
+                out.append(load_session(p, archived=True))
         out.sort(key=lambda s: (s.end or s.start or dt.datetime.min, not s.archived), reverse=True)
         if not self.dedupe:
             return out
@@ -1294,12 +1309,12 @@ def cmd_purge(args, store: SessionStore):
     targets: list[Path] = []
     if args.refs:
         for r in args.refs:
-            matches = [p for p in ad.glob("*/*.jsonl") if p.stem.startswith(r)]
+            matches = [p for p in archive_files() if p.stem.startswith(r)]
             if not matches:
                 die(f"归档里找不到:{r}")
             targets += matches
     else:
-        targets = list(ad.glob("*/*.jsonl"))
+        targets = archive_files()
 
     if args.older_than is not None:
         cutoff = dt.datetime.now() - dt.timedelta(days=args.older_than)
@@ -1348,7 +1363,7 @@ def cmd_purge(args, store: SessionStore):
     # 清理 manifest 中已不存在的条目
     keep_entries = [
         e for e in entries
-        if any(pp.stem == e.get("id") for pp in ad.glob("*/*.jsonl"))
+        if any(pp.stem == e.get("id") for pp in archive_files())
     ]
     save_manifest(keep_entries)
     # 清掉空目录
@@ -1386,7 +1401,7 @@ def cmd_dedupe(args, store: SessionStore):
             extra.append(s)
             print(paint(f"    移走  {fmt_time(s.end or s.start)}  {s.path.parent.name}  ({human_size(s.size)})", "2", on))
 
-    dest_dir = archive_dir() / "_dupes"
+    dest_dir = dupes_dir()
     print(paint(f"\n{len(extra)} 份多余副本会移到 {dest_dir}(保留,不删)", "1;33", on))
     if not args.force:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
