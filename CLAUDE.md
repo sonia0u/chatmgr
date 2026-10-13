@@ -41,7 +41,7 @@ cgr <命令> -h                        # 看某子命令的全部参数
 
 子命令:`list / search / show / pick / export / stats / rm / purge / dedupe / rename`,各有常用别名(见下)。
 
-**裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`(当序号);形如会话 id 前缀(≥6 位十六进制,可带 `-`)→ `show`;其他词 → `search`;已知命令/别名 → 原样。
+**裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`(当序号);形如会话 id 前缀(≥6 位十六进制,可带 `-`)→ `show`;其他词 → `search`;已知命令/别名 → 原样。**推论**:`search` 的动词只有在"词在前"时才能省(`cgr yazi --grep`),写成 `cgr --grep yazi` 会走 `list` 而报错。
 
 **验证靠手动跑**,没有自动化测试。改完后至少跑一遍 `list` 和目标子命令。注意:会话数 = jsonl 文件数 **减去重复 id**(同一会话可能在多个项目文件夹各有一份,见下;`list` 会提示"重复会话")。
 
@@ -81,14 +81,14 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 ## 不可违反的设计约定
 
 - **破坏性操作默认只预览**:`rm` / `purge` / `dedupe` 不加 `--force` 只打印预览;**交互终端下再问一句**(`rm` 用 `_ask_delete()` 三选:y=直删、n=删并备份、其他=取消;`purge` / `dedupe` 用 `_confirm()`);**非 TTY 一律只预览、绝不执行**。这是安全底线,不要加"默认即执行"的开关,脚本里显式用 `--force`。
-- **删除默认备份,直删要明示**:`rm` 走备份时先 `backup_session()` 成功再删原件,备份失败立即中止、绝不删;直删(交互按 `y`,或脚本 `--no-backup`)不备份,但会明确提示"删了不可恢复"。
+- **删除:备份可选,直删要明示**:`rm` 交互下 `y` = 直接删(不备份)、`n` = 删并备份一份;脚本用 `-f` = 直接删(不备份)。走备份时先 `backup_session()` 成功再删原件,备份失败立即中止、绝不删;直删会明确提示"删了不可恢复"。
 - **归档 = 原样复制 jsonl**(可还原),不是转 markdown。markdown 属于 `export`,是另一条线。
 - **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
 
 ## 参数与输出约定
 
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
-- 命令别名集中在模块常量 `SUBCOMMANDS`(`list`→`ls`/`l`,`search`→`s`/`grep`,`show`→`o`/`cat`,`pick`→`f`,`export`→`e`,`stats`→`st`/`stat`,`rm`→`d`/`del`,`purge`→`p`,`dedupe`→`dd`,`rename`→无别名);`KNOWN_COMMANDS` 供裸参数分派判断。加别名改这一处即可。
+- 子命令别名只保留 `pick`→`f`(常用),其余一律敲全名 —— 集中在模块常量 `SUBCOMMANDS`(其余命令的别名列表为空),`KNOWN_COMMANDS` 供裸参数分派判断。要增删别名改这一处即可。注意别名删掉后,`cgr ls` 这类词会被当成**搜索**(非命令词都走 search)。
 - 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived)。
 - `rm` 的 `refs` 可为空:此时按 `-p` 的筛选批量删;`refs` 与 `-p` 都不给则报错 —— 绝不误删全部。
 - `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。搜索**同时搜标题**(标题不在 `search_units()` 里,得单独对 `s.title` 匹配);结果分**【标题命中】/【内容命中】**两组,内容命中标明所属标题。每个会话默认只展开 `--max-hits`(默认 5)处,`--max-hits 0` 或 `--grep` = 不限。`--grep` 每行前缀标题;`--pick` 把命中的会话送进 `run_picker()`;`--json` 为 `{query, title_matches, content_matches}`;命中来源标签经 `KIND_LABEL` 映射成中文(`user`→你、`assistant`→Claude、`tool`→工具、`thinking`→思考、`tool_result`→工具返回),`--json` 里仍是原始 kind。
