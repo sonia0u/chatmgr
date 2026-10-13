@@ -20,7 +20,7 @@ cgr <命令> -h                        # 某子命令的全部参数
 | `cgr list` | `cgr` · `cgr ls` · `cgr l` | 列出会话 |
 | `cgr search <词>` | `cgr <词>` · `cgr s <词>` · `cgr grep <词>` | 搜索内容 |
 | `cgr show <ref>` | `cgr <序号>` · `cgr o <ref>` · `cgr cat <ref>` | 阅读一个会话 |
-| `cgr pick` | `cgr f` | fzf 交互选择 |
+| `cgr pick [关键词]` | `cgr f [关键词]` | fzf 交互选择 |
 | `cgr export <ref>` | `cgr e <ref>` | 导出 md / txt / json |
 | `cgr stats` | `cgr st` · `cgr stat` | 用量统计 |
 | `cgr rm <ref...>` | `cgr d <ref...>` · `cgr del <ref...>` | 删除会话(默认预览) |
@@ -115,7 +115,24 @@ cgr search <query> [--ignore-case | --case-sensitive] [--regex]
            [--context N] [--max-hits N] [全局参数]
 ```
 
-**说明** **默认范围**:你的输入 + Claude 正文 + 工具调用(名字和参数);工具返回和 thinking 属噪音,`--all` 才纳入。**默认忽略大小写**,**默认按会话分组**,命中关键词高亮。
+**说明** **搜索范围**:**标题** + 你的输入 + Claude 正文 + 工具调用(名字和参数);工具返回和 thinking 属噪音,`--all` 才纳入。**默认忽略大小写**,命中关键词高亮。
+
+结果分**两组**:
+
+- **【标题命中】** —— 会话标题里含搜索词的
+- **【内容命中】** —— 正文 / 工具调用里含搜索词的,每条标明**属于哪个标题**
+
+每组里每个会话都标了 **项目 · 最后活动时间 · N 问 / M 答**(这个会话有多少条消息),并给出 `→ 打开 cgr <序号> · 续聊 cgr <序号> -r`。
+
+`--grep` 平铺时每行前面也带标题(如 `配置yazi › assistant: …`)。`--json` 输出 `{query, title_matches, content_matches}`。
+
+**搜完想直接打开**:结果里每个会话都带 `→ 打开 cgr <序号> · 续聊 cgr <序号> -r`;或加 `--pick` 直接进 fzf(Enter 打开 / Ctrl-R 续聊,只列命中的会话)。
+
+**命中太多看不全**:默认每组每个会话只展开 5 处。截断处会打印**完整可复制的命令**,如
+`… 另有 243 处。全看:cgr search yazi --max-hits 0`(你加过的筛选也会带上)。等价的其它办法:
+- `--max-hits 0` —— **不限**,全部展开(仍是分组、带标题)
+- `--grep` —— 平铺全部命中,每行带标题,适合 `| less -R` 或 `> 结果.txt`
+- 配合 `-p 项目名` 缩小范围
 
 **完整 → 简写**
 
@@ -129,6 +146,7 @@ cgr search <query> [--ignore-case | --case-sensitive] [--regex]
 | `cgr search --all timeout` | `cgr search --all timeout` | `--all` 无短选项 |
 | `cgr search --grep yazi` | `cgr search --grep yazi` | `--grep` 无短选项(平铺输出) |
 | `cgr search --context 30 yazi` | `cgr search --context 30 yazi` | `--context` 无短选项 |
+| `cgr search --max-hits 0 yazi` | `cgr search --max-hits 0 yazi` | 不限,命中全展开 |
 | `cgr search --project markdown yazi` | `cgr search -p markdown yazi` | 全局选项可短写 |
 | `cgr search --project markdown --regex 'a.*b'` | `cgr search -p markdown --regex 'a.*b'` | 组合 |
 
@@ -186,10 +204,10 @@ cgr 3 --pager         # 长会话翻页
 **完整语法**
 
 ```bash
-cgr pick [全局参数]
+cgr pick [关键词] [全局参数]     # 别名 cgr f;给了关键词就填进搜索框初筛
 ```
 
-**说明** 用 `fzf` 把所有会话列成一个**可搜索的清单**,选中后直接打开——省掉"先 `list` 看序号,再 `show 3`"两步。右侧实时预览光标所在会话的内容。
+**说明** 用 `fzf` 把所有会话列成一个**可搜索的清单**,选中后直接打开——省掉"先 `list` 看序号,再 `show 3`"两步。右侧实时预览光标所在会话的内容。给个关键词(`cgr f yazi`)会把 fzf 的搜索框**预填**成它,直接就是筛好的。`cgr search <词> --pick` 则只把**搜到的会话**送进来挑。
 
 ```
   搜索:  [ 可直接打字过滤 ]                  ┌──────────────────────────┐
@@ -212,6 +230,7 @@ cgr pick [全局参数]
 | 完整写法 | 简写 | 说明 |
 |---|---|---|
 | `cgr pick` | `cgr f` | 子命令别名 |
+| `cgr pick yazi` | `cgr f yazi` | 关键词预填进 fzf 搜索框 |
 | `cgr pick --project yazi` | `cgr f -p yazi` | 全局筛选可组合 |
 | `cgr pick --archived` | `cgr f -a` | 连备份一起挑 |
 

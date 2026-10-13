@@ -825,8 +825,32 @@ def cmd_search(args, store: SessionStore):
     ctx = args.context
     on = color_enabled()
     pcolors = project_colors(store.sessions())
-    cap = 10**9 if args.grep else args.max_hits
-    hits = []  # (session, 真实命中数, 用于展示的片段)
+    idx = store.index_map()
+    cap = 10**9 if (args.grep or args.max_hits == 0) else args.max_hits  # 0 = 不限
+
+    # 拼一条"看全部"的完整命令(含当前查询和筛选),提示里直接给可复制的整条
+    q = ["cgr", "search"]
+    if args.regex:
+        q.append("--regex")
+    if args.role:
+        q += ["--role", args.role]
+    if args.all:
+        q.append("--all")
+    if not args.ignore_case:
+        q.append("-c")
+    if args.context != 60:
+        q += ["--context", str(args.context)]
+    for p in (args.project or []):
+        q += ["-p", shlex.quote(p)]
+    if args.since:
+        q += ["-s", shlex.quote(args.since)]
+    if args.until:
+        q += ["-u", shlex.quote(args.until)]
+    q.append(shlex.quote(args.query))
+    all_cmd = " ".join([*q, "--max-hits", "0"])
+
+    title_hits = [s for s in sessions if pat.search(s.title)]  # 标题里命中
+    content_hits = []  # (session, 真实命中数, 用于展示的片段)
     for s in sessions:
         count = 0
         snippets = []
@@ -836,41 +860,77 @@ def cmd_search(args, store: SessionStore):
                 if len(snippets) < cap:
                     snippets.append((kind, _snippet(text, m, ctx, pat, on)))
         if count:
-            hits.append((s, count, snippets))
+            content_hits.append((s, count, snippets))
+
+    if args.pick:  # 搜完直接进 fzf 挑一个打开 / 续聊
+        seen: set[str] = set()
+        matched: list[Session] = []
+        for s in (*title_hits, *(s for s, _, _ in content_hits)):
+            if s.sid not in seen:
+                seen.add(s.sid)
+                matched.append(s)
+        if not matched:
+            print("没有命中")
+            return
+        run_picker(store, matched, archived=args.archived)
+        return
 
     if args.json:
-        data = [
+        print(json.dumps(
             {
-                "session": sess_to_dict(s),
-                "count": c,
-                "hits": [{"kind": k, "text": t} for k, t in sn],
-            }
-            for s, c, sn in hits
-        ]
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+                "query": args.query,
+                "title_matches": [sess_to_dict(s) for s in title_hits],
+                "content_matches": [
+                    {"session": sess_to_dict(s), "count": c,
+                     "hits": [{"kind": k, "text": t} for k, t in sn]}
+                    for s, c, sn in content_hits
+                ],
+            },
+            ensure_ascii=False, indent=2,
+        ))
         return
-    if not hits:
+    if not title_hits and not content_hits:
         print("没有命中")
         return
 
-    total = sum(c for _, c, _ in hits)
-    if args.grep:
-        for s, _, sn in hits:
+    def sidx(s: Session) -> str:
+        return idx.get(str(s.path), "?")
+
+    def meta(s: Session) -> str:
+        tag = " [已归档]" if s.archived else ""
+        return paint(
+            f"{s.short_project} · {fmt_time(s.end or s.start)} · {s.prompts} 问 / {s.replies} 答{tag}",
+            pcolors.get(s.short_project, "36"), on)
+
+    if args.grep:  # 平铺:每行带标题,一眼看出是哪次对话里的
+        for s, _, sn in content_hits:
             for kind, text in sn:
-                print(f"{s.sid[:8]}:{kind}: {text}")
-    else:
-        idx = store.index_map()
-        for s, c, sn in hits:
-            tag = "  [已归档]" if s.archived else ""
-            print(paint(f"[{idx.get(str(s.path), '?')}] {s.title}{tag}  ({c} 处命中)", "1;36", on))
-            print(f"    {fmt_time(s.end or s.start)}  {paint(s.project, pcolors.get(s.short_project, '36'), on)}")
+                print(f"{s.title} › {kind}: {text}")
+        if title_hits:
+            print(paint(f"— 另有 {len(title_hits)} 个会话是【标题】命中 —", "2", on))
+        total = sum(c for _, c, _ in content_hits)
+        print(f"{total} 处内容命中,分布在 {len(content_hits)} 个会话")
+        return
+
+    if title_hits:
+        print(paint(f"【标题命中】{len(title_hits)} 个会话", "1;36", on))
+        for s in title_hits:
+            print(f"  [{sidx(s)}] {s.title}")
+            print(f"      {meta(s)}")
+            print(paint(f"      → 打开 cgr {sidx(s)} · 续聊 cgr {sidx(s)} -r", "2", on))
+        print()
+    if content_hits:
+        total = sum(c for _, c, _ in content_hits)
+        print(paint(f"【内容命中】{len(content_hits)} 个会话,{total} 处", "1;36", on))
+        for s, c, sn in content_hits:
+            print(f"  [{sidx(s)}] {s.title}  ({c} 处)")  # 标明是哪次对话里的内容
+            print(f"      {meta(s)}")
             for kind, text in sn:
-                print(f"    {paint(kind, '2', on)}: {text}")
+                print(f"      {paint(kind, '2', on)}: {text}")
             if c > len(sn):
-                print(paint(f"    … 另有 {c - len(sn)} 处", "2", on))
-            print(paint(f"    → claude --resume {s.sid}", "2", on))
+                print(paint(f"      … 另有 {c - len(sn)} 处。全看:{all_cmd}", "2", on))
+            print(paint(f"      → 打开 cgr {sidx(s)} · 续聊 cgr {sidx(s)} -r", "2", on))
             print()
-    print(f"{total} 处命中,分布在 {len(hits)} 个会话")
 
 
 def _snippet(text: str, m, ctx: int, pat=None, on: bool = False) -> str:
@@ -917,11 +977,16 @@ def cmd_show(args, store: SessionStore):
             _resume_session(s)
 
 
-def pick_lines(store: SessionStore, args) -> list[str]:
-    """pick / _picklines 共用:生成 fzf 的列表行(第 1 列显示,末列藏序号)。"""
+def pick_sessions(store: SessionStore, args) -> list[Session]:
+    """pick 列出的会话(套用全局筛选 + limit)。"""
     sessions = apply_filters(store.sessions(), args)
     if getattr(args, "limit", None):
         sessions = sessions[: args.limit]
+    return sessions
+
+
+def session_lines(store: SessionStore, sessions: list[Session]) -> list[str]:
+    """pick / _picklines 共用:生成 fzf 的列表行(第 1 列显示,末列藏序号)。"""
     idx = store.index_map()
     on = color_enabled()
     pcolors = project_colors(store.sessions())
@@ -942,7 +1007,7 @@ def pick_lines(store: SessionStore, args) -> list[str]:
 
 def cmd_picklines(args, store: SessionStore):
     """内部用:给 fzf 的 reload 重新生成列表行。"""
-    print("\n".join(pick_lines(store, args)))
+    print("\n".join(session_lines(store, pick_sessions(store, args))))
 
 
 def _filter_args(args) -> list[str]:
@@ -961,11 +1026,12 @@ def _filter_args(args) -> list[str]:
     return out
 
 
-def cmd_pick(args, store: SessionStore):
-    """fzf 交互选择:Enter 打开 / Tab 多选 / Ctrl-R 续聊 / Ctrl-E 改名 / Ctrl-D 删除。"""
+def run_picker(store: SessionStore, sessions: list[Session], prefill: str = "",
+               reload_cmd: str | None = None, archived: bool = False):
+    """fzf 交互:Enter 打开 / Tab 多选 / Ctrl-R 续聊 / Ctrl-E 改名 / Ctrl-D 删除。"""
     if not sys.stdin.isatty():
-        die("cgr pick 需要在交互终端下运行(fzf 需要 tty);非交互场景请用 list / search")
-    lines = pick_lines(store, args)
+        die("需要在交互终端下运行(fzf 需要 tty);非交互场景请用 list / search")
+    lines = session_lines(store, sessions)
     if not lines:
         print("没有会话")
         return
@@ -973,34 +1039,34 @@ def cmd_pick(args, store: SessionStore):
     if not fzf:
         die("没装 fzf —— brew install fzf")
     exe, script = sys.executable, os.path.abspath(__file__)
-    extra = ["-a"] if args.archived else []
+    extra = ["-a"] if archived else []  # 委托时要带同样的 -a,否则序号对不上
     selfq = f"{shlex.quote(exe)} {shlex.quote(script)}"
     preview = f"{selfq} show {{2}}"
     if color_enabled():
         preview += " --color"  # 预览在 fzf 里不是 TTY,得强制上色,否则和你直接跑 cgr 不一样
-    reload_cmd = " ".join([selfq, "_picklines", *[shlex.quote(x) for x in _filter_args(args)]])
-    bind = f"ctrl-e:execute({selfq} rename {{2}})+reload({reload_cmd})"  # 改名后刷新列表
-    sub = subprocess.run(
-        [
-            fzf,
-            "--ansi",
-            "--multi",  # Tab / Shift-Tab 多选
-            "--layout=reverse",  # 列表从顶部往下排,别贴底留大片空白
-            "--prompt=搜索 > ",  # 左上角那个框是模糊过滤用的,标清楚
-            "--delimiter=\t",
-            "--with-nth=1",
-            "--nth=1",
-            "--preview", preview,
-            "--preview-window=right:60%:wrap",
-            "--expect=ctrl-r,ctrl-d",
-            "--bind", bind,
-            "--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-E 改名 · Ctrl-D 删除(预览)",
-            "--height=~90%",  # 自适应:条目少时窗口自动缩,不留空白
-        ],
-        input="\n".join(lines),
-        text=True,
-        capture_output=True,
-    )
+    argv = [
+        fzf,
+        "--ansi",
+        "--multi",  # Tab / Shift-Tab 多选
+        "--layout=reverse",  # 列表从顶部往下排,别贴底留大片空白
+        "--prompt=搜索 > ",  # 左上角那个框是模糊过滤用的,标清楚
+        "--delimiter=\t",
+        "--with-nth=1",
+        "--nth=1",
+        "--preview", preview,
+        "--preview-window=right:60%:wrap",
+        "--expect=ctrl-r,ctrl-d",
+        "--height=~90%",  # 自适应:条目少时窗口自动缩,不留空白
+    ]
+    if reload_cmd:  # 能重生成列表才给 Ctrl-E 改名(改名后 reload 刷新)
+        argv += ["--bind", f"ctrl-e:execute({selfq} rename {{2}})+reload({reload_cmd})",
+                 "--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-E 改名 · Ctrl-D 删除(预览)"]
+    else:
+        argv += ["--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-D 删除(预览)"]
+    if prefill:
+        argv += ["--query", prefill]
+
+    sub = subprocess.run(argv, input="\n".join(lines), text=True, capture_output=True)
     if sub.returncode != 0 or not sub.stdout.strip():
         return
     rows = sub.stdout.splitlines()
@@ -1017,6 +1083,14 @@ def cmd_pick(args, store: SessionStore):
     else:  # 多个:依次打开
         for r in refs:
             subprocess.run([exe, script, "show", r, *extra])
+
+
+def cmd_pick(args, store: SessionStore):
+    """fzf 交互选择(可给初筛词):cgr f [关键词]"""
+    selfq = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
+    reload_cmd = " ".join([selfq, "_picklines", *[shlex.quote(x) for x in _filter_args(args)]])
+    run_picker(store, pick_sessions(store, args), prefill=args.query or "",
+               reload_cmd=reload_cmd, archived=args.archived)
 
 
 def cmd_export(args, store: SessionStore):
@@ -1368,7 +1442,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--all", action="store_true", help="连工具返回和 thinking 一起搜")
     sp.add_argument("--grep", action="store_true", help="平铺输出,不按会话分组")
     sp.add_argument("--context", type=int, default=60, metavar="N", help="命中前后字数(默认 60)")
-    sp.add_argument("--max-hits", type=int, default=5, metavar="N", help="每个会话最多显示几处(默认 5)")
+    sp.add_argument("--max-hits", type=int, default=5, metavar="N",
+                    help="每个会话最多显示几处(默认 5;0 = 不限)")
+    sp.add_argument("--pick", action="store_true", help="搜完直接进 fzf 挑一个打开 / 续聊")
     sp.set_defaults(func=cmd_search)
 
     sp = sub.add_parser("show", aliases=SUBCOMMANDS["show"], parents=[common], help="阅读一个会话")
@@ -1379,7 +1455,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_show)
 
     sp = sub.add_parser("pick", aliases=SUBCOMMANDS["pick"], parents=[common],
-                        help="fzf 交互选择:Enter 打开 / Ctrl-R 续聊 / Ctrl-D 预览删除")
+                        help="fzf 交互选择(可带初筛词):Enter 打开 / Ctrl-R 续聊 / Ctrl-E 改名 / Ctrl-D 删除")
+    sp.add_argument("query", nargs="?", help="可选的初筛词,直接填进 fzf 搜索框")
     sp.set_defaults(func=cmd_pick)
 
     sp = sub.add_parser("export", aliases=SUBCOMMANDS["export"], parents=[common], help="导出会话")
