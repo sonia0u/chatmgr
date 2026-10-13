@@ -140,6 +140,37 @@ def emit(text: str, use_pager: bool):
     sys.stdout.write(text)
 
 
+def copy_to_clipboard(text: str) -> bool:
+    """尽力把文本放进系统剪贴板(macOS pbcopy / Linux wl-copy / xclip)。"""
+    for prog in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"]):
+        exe = shutil.which(prog[0])
+        if not exe:
+            continue
+        try:
+            subprocess.run(
+                [exe, *prog[1:]],
+                input=text.encode("utf-8"),
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _confirm(prompt: str) -> bool:
+    """只在交互终端返回用户选择;非 TTY 一律 False(保持 dry-run 的安全默认)。"""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    try:
+        return input(prompt).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
 def parse_ts(v):
     """时间戳 → 本地 naive datetime。支持 ISO 与毫秒 epoch。"""
     if v is None:
@@ -984,9 +1015,13 @@ def cmd_rm(args, store: SessionStore):
             print(paint("      ⚠ 这是备份文件本身,不是活会话", "1;31", on))
     if not args.force:
         cmd = "cgr rm " + " ".join(shlex.quote(r) for r in args.refs) + " -f"
-        print(paint("\n这是预览(dry-run),还没删。确认无误后运行:", "1;33", on))
+        print(paint("\n预览完成,还没删。等价命令:", "1;33", on))
         print("  " + cmd)
-        return
+        if copy_to_clipboard(cmd):
+            print(paint("  (已复制到剪贴板,可直接粘贴)", "2", on))
+        if not _confirm(paint("要现在删除吗?(先自动备份)[y/N] ", "1;33", on)):
+            print(paint("已取消,什么都没删。", "2", on))
+            return
 
     done = []
     for s in targets:
@@ -1006,8 +1041,8 @@ def cmd_rm(args, store: SessionStore):
         done.append(s.sid)
         print(f"  已删 {s.sid[:8]}  (备份 → {dest})")
     print(f"\n完成:{len(done)} 个会话已备份并删除。")
-    print(paint(f"备份留在 {archive_dir()}(当保险)。确认不需要时清掉:", "2", on))
-    print(paint("  cgr purge " + " ".join(done) + " -f", "2", on))
+    print(paint(f"备份留在 {archive_dir()}(当保险)。要一次清掉全部备份:", "2", on))
+    print(paint("  cgr purge -f", "2", on))
 
 
 def cmd_purge(args, store: SessionStore):
@@ -1061,9 +1096,14 @@ def cmd_purge(args, store: SessionStore):
         if args.older_than is not None:
             bits += ["-n", str(args.older_than)]
         bits.append("-f")
-        print(paint("\n这是预览(dry-run),还没删。确认无误后运行:", "1;33", on))
-        print("  " + " ".join(bits))
-        return
+        cmd = " ".join(bits)
+        print(paint("\n预览完成,还没删。等价命令:", "1;33", on))
+        print("  " + cmd)
+        if copy_to_clipboard(cmd):
+            print(paint("  (已复制到剪贴板,可直接粘贴)", "2", on))
+        if not _confirm(paint("要现在清除这些备份吗?[y/N] ", "1;33", on)):
+            print(paint("已取消,什么都没删。", "2", on))
+            return
 
     removed = set()
     for p in targets:
