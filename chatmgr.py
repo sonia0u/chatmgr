@@ -453,12 +453,20 @@ class SessionStore:
 # ---------------------------------------------------------------- 筛选 / 指认
 
 
+def _project_filters(args) -> list[str]:
+    """把 -p 的多个值(可重复、可逗号分隔)摊平成小写项目名列表。"""
+    raw = getattr(args, "project", None) or []
+    out: list[str] = []
+    for item in raw:
+        out += [p.strip().lower() for p in str(item).split(",") if p.strip()]
+    return out
+
+
 def apply_filters(sessions: list[Session], args) -> list[Session]:
     out = sessions
-    proj = getattr(args, "project", None)
-    if proj:
-        pl = proj.lower()
-        out = [s for s in out if pl in s.project.lower() or pl in s.short_project.lower()]
+    projs = _project_filters(args)
+    if projs:
+        out = [s for s in out if any(p in s.project.lower() or p in s.short_project.lower() for p in projs)]
     since = parse_when(getattr(args, "since", None))
     until = parse_when(getattr(args, "until", None), end_of_day=True)
     if since:
@@ -892,27 +900,17 @@ def cmd_show(args, store: SessionStore):
             _resume_session(s)
 
 
-def cmd_pick(args, store: SessionStore):
-    """fzf 交互选择:Enter 打开 / Ctrl-R 续聊 / Ctrl-D 预览删除。"""
-    if not sys.stdin.isatty():
-        die("cgr pick 需要在交互终端下运行(fzf 需要 tty);非交互场景请用 list / search")
+def pick_lines(store: SessionStore, args) -> list[str]:
+    """pick / _picklines 共用:生成 fzf 的列表行(第 1 列显示,末列藏序号)。"""
     sessions = apply_filters(store.sessions(), args)
-    if args.limit:
+    if getattr(args, "limit", None):
         sessions = sessions[: args.limit]
-    if not sessions:
-        print("没有会话")
-        return
-    fzf = shutil.which("fzf")
-    if not fzf:
-        die("没装 fzf —— brew install fzf")
     idx = store.index_map()
     on = color_enabled()
     pcolors = project_colors(store.sessions())
     lines = []
     for s in sessions:
-        i = idx.get(str(s.path), "?")
         tag = " [已归档]" if s.archived else ""
-        # 自己排版成一行,再把序号作为隐藏的末列(fzf 只显示第 1 列,搜索也只看第 1 列)
         display = "  ".join(
             [
                 paint(fmt_time(s.end or s.start), "2", on),
@@ -921,24 +919,65 @@ def cmd_pick(args, store: SessionStore):
                 paint(f"{s.prompts}+{s.replies}", "2", on),
             ]
         )
-        lines.append(display + "\t" + str(i))
+        lines.append(display + "\t" + str(idx.get(str(s.path), "?")))
+    return lines
+
+
+def cmd_picklines(args, store: SessionStore):
+    """内部用:给 fzf 的 reload 重新生成列表行。"""
+    print("\n".join(pick_lines(store, args)))
+
+
+def _filter_args(args) -> list[str]:
+    """把当前的筛选选项拼回命令行,供 pick 的 reload 复用。"""
+    out: list[str] = []
+    for p in getattr(args, "project", None) or []:
+        out += ["-p", p]
+    if getattr(args, "since", None):
+        out += ["-s", args.since]
+    if getattr(args, "until", None):
+        out += ["-u", args.until]
+    if getattr(args, "limit", None):
+        out += ["-l", str(args.limit)]
+    if getattr(args, "archived", False):
+        out.append("-a")
+    return out
+
+
+def cmd_pick(args, store: SessionStore):
+    """fzf 交互选择:Enter 打开 / Tab 多选 / Ctrl-R 续聊 / Ctrl-E 改名 / Ctrl-D 批量删。"""
+    if not sys.stdin.isatty():
+        die("cgr pick 需要在交互终端下运行(fzf 需要 tty);非交互场景请用 list / search")
+    lines = pick_lines(store, args)
+    if not lines:
+        print("没有会话")
+        return
+    fzf = shutil.which("fzf")
+    if not fzf:
+        die("没装 fzf —— brew install fzf")
     exe, script = sys.executable, os.path.abspath(__file__)
     extra = ["-a"] if args.archived else []
-    preview = f"{shlex.quote(exe)} {shlex.quote(script)} show {{2}}"
-    if on:
+    selfq = f"{shlex.quote(exe)} {shlex.quote(script)}"
+    preview = f"{selfq} show {{2}}"
+    if color_enabled():
         preview += " --color"  # 预览在 fzf 里不是 TTY,得强制上色,否则和你直接跑 cgr 不一样
+    reload_cmd = " ".join([selfq, "_picklines", *[shlex.quote(x) for x in _filter_args(args)]])
+    bind = f"ctrl-e:execute({selfq} rename {{2}})+reload({reload_cmd})"  # 改名后刷新列表
     sub = subprocess.run(
         [
             fzf,
             "--ansi",
+            "--multi",  # Tab / Shift-Tab 多选
+            "--layout=reverse",  # 列表从顶部往下排,别贴底留大片空白
             "--delimiter=\t",
             "--with-nth=1",
             "--nth=1",
             "--preview", preview,
             "--preview-window=right:60%:wrap",
             "--expect=ctrl-r,ctrl-d",
-            "--header=Enter 打开 · Ctrl-R 续聊 · Ctrl-D 预览删除",
-            "--height=90%",
+            "--bind", bind,
+            "--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-E 改名 · Ctrl-D 批量删(预览)",
+            "--height=~90%",  # 自适应:条目少时窗口自动缩,不留空白
         ],
         input="\n".join(lines),
         text=True,
@@ -946,19 +985,20 @@ def cmd_pick(args, store: SessionStore):
     )
     if sub.returncode != 0 or not sub.stdout.strip():
         return
-    out = sub.stdout.splitlines()
-    key = out[0] if out else ""
-    sel = out[1] if len(out) > 1 else ""
-    if not sel.strip():
+    rows = sub.stdout.splitlines()
+    key = rows[0] if rows else ""
+    refs = [r.rsplit("\t", 1)[-1].strip() for r in rows[1:] if r.strip()]
+    if not refs:
         return
-    ref = sel.rsplit("\t", 1)[-1].strip()
-    if key == "ctrl-r":
-        cmd = ["show", ref, "-r"]
-    elif key == "ctrl-d":
-        cmd = ["rm", ref]
-    else:
-        cmd = ["show", ref]
-    subprocess.run([exe, script, *cmd, *extra])
+    if key == "ctrl-d":  # 选中的(可多个)全部进入删除预览
+        subprocess.run([exe, script, "rm", *refs, *extra])
+    elif key == "ctrl-r":  # 续聊只对第一个
+        subprocess.run([exe, script, "show", refs[0], "-r", *extra])
+    elif len(refs) == 1:
+        subprocess.run([exe, script, "show", refs[0], *extra])
+    else:  # 多个:依次打开
+        for r in refs:
+            subprocess.run([exe, script, "show", r, *extra])
 
 
 def cmd_export(args, store: SessionStore):
@@ -1060,9 +1100,14 @@ def cmd_stats(args, store: SessionStore):
 
 
 def cmd_rm(args, store: SessionStore):
-    targets = [resolve(r, store) for r in args.refs]
+    if args.refs:
+        targets = [resolve(r, store) for r in args.refs]
+    else:
+        if not _project_filters(args):
+            die("没指定要删什么:给会话(id 前缀/序号/标题),或用 -p 指定要清空的项目")
+        targets = apply_filters(store.sessions(), args)
     if not targets:
-        die("没指定要删的会话")
+        die("没有匹配的会话")
     on = color_enabled()
     print(paint(f"将删除 {len(targets)} 个会话:", "1;33", on))
     for s in targets:
@@ -1240,11 +1285,21 @@ def cmd_dedupe(args, store: SessionStore):
 def cmd_rename(args, store: SessionStore):
     """给会话改名:向 jsonl 追加一条 custom-title 记录(与 Claude Code 自身改名同格式)。"""
     s = resolve(args.ref, store)
-    title = flat(" ".join(args.title))
-    if not title:
-        die("新标题不能为空")
     if s.archived:
         die("这是归档副本,不能直接改名;请对活会话改名")
+    if args.title:
+        title = flat(" ".join(args.title))
+    else:  # 没给标题 → 交互式问(供 pick 里 Ctrl-E 调用)
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            die("没给新标题;非交互下请写成:cgr rename <ref> <新标题>")
+        try:
+            title = flat(input(f"新标题(当前: {s.title})= ").strip())
+        except (EOFError, KeyboardInterrupt):
+            print()
+            title = ""
+        if not title:
+            print("已取消,标题未改。")
+            return
     rec = {"type": "custom-title", "customTitle": title, "sessionId": s.sid}
     with open(s.path, "rb+") as f:
         f.seek(0, os.SEEK_END)
@@ -1259,9 +1314,10 @@ def cmd_rename(args, store: SessionStore):
 # ---------------------------------------------------------------- main
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _common_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("-p", "--project", help="按项目路径/名筛选")
+    common.add_argument("-p", "--project", action="append", metavar="P",
+                        help="按项目筛选,可重复或逗号分隔(多个取并集)")
     common.add_argument("-s", "--since", metavar="WHEN", help="起始时间:YYYY-MM-DD 或 7d/2w/3m")
     common.add_argument("-u", "--until", metavar="WHEN", help="截止时间:YYYY-MM-DD 或 7d/2w/3m")
     common.add_argument("-l", "--limit", type=int, metavar="N", help="最多处理 N 个会话")
@@ -1269,7 +1325,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("-a", "--archived", action="store_true", help="把备份也纳入数据源")
     common.add_argument("--color", dest="color", action="store_true", default=None, help="强制彩色输出")
     common.add_argument("--no-color", dest="color", action="store_false", help="关闭彩色输出")
+    return common
 
+
+def build_parser() -> argparse.ArgumentParser:
+    common = _common_parser()
     p = argparse.ArgumentParser(
         prog="cgr",
         description="Claude Code 聊天记录管理。不带子命令=列表;cgr 3=打开第3个;cgr 关键词=搜索。",
@@ -1318,7 +1378,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("rm", aliases=SUBCOMMANDS["rm"], parents=[common],
                         help="删除会话(默认预览;交互下 y=直删 / n=删并备份)")
-    sp.add_argument("refs", nargs="+")
+    sp.add_argument("refs", nargs="*", help="会话(id 前缀/序号/标题);也可不给,改用 -p 按项目选")
     sp.add_argument("-f", "--force", action="store_true", help="跳过交互直接删(不给则只预览)")
     sp.add_argument("--no-backup", action="store_true", help="删除时不备份(配合 -f 用于脚本)")
     sp.set_defaults(func=cmd_rm)
@@ -1337,14 +1397,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("rename", aliases=SUBCOMMANDS["rename"], parents=[common],
                         help="给会话改名(写入 custom-title)")
     sp.add_argument("ref", help="id 前缀 / 列表序号 / 标题")
-    sp.add_argument("title", nargs="+", help="新标题")
+    sp.add_argument("title", nargs="*", help="新标题;不给则交互式问(pick 里 Ctrl-E 用的就是这个)")
     sp.set_defaults(func=cmd_rename)
 
     return p
 
 
 def main(argv=None):
+    global _COLOR_MODE
     raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] == "_picklines":  # 内部用:pick 的 reload,不进 <命令> 帮助
+        args = _common_parser().parse_args(raw[1:])
+        _COLOR_MODE = getattr(args, "color", None)
+        if not projects_dir().is_dir():
+            die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")
+        cmd_picklines(args, SessionStore(include_archived=getattr(args, "archived", False)))
+        return
     # 分派:空→list;选项开头→list;纯数字→show;其他词→search;已知命令/别名→原样
     if not raw:
         raw = ["list"]
@@ -1363,7 +1431,6 @@ def main(argv=None):
     args = build_parser().parse_args(raw)
     if not getattr(args, "func", None):
         args = build_parser().parse_args(["list"])
-    global _COLOR_MODE
     _COLOR_MODE = getattr(args, "color", None)  # --color / --no-color 覆盖自动判断
     if not projects_dir().is_dir() and args.func is not cmd_purge:
         die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")

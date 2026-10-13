@@ -91,10 +91,11 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
 - 命令别名集中在模块常量 `SUBCOMMANDS`(`list`→`ls`/`l`,`search`→`s`/`grep`,`show`→`o`/`cat`,`pick`→`f`,`export`→`e`,`stats`→`st`/`stat`,`rm`→`d`/`del`,`purge`→`p`,`dedupe`→`dd`,`rename`→无别名);`KNOWN_COMMANDS` 供裸参数分派判断。加别名改这一处即可。
-- 全局短选项在所有子命令保持一致:`-p`(project) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived)。
+- 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived)。
+- `rm` 的 `refs` 可为空:此时按 `-p` 的筛选批量删;`refs` 与 `-p` 都不给则报错 —— 绝不误删全部。
 - `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。
 - `list` 的序号列高亮(便于直接拿来 `cgr 3`)。
-- `pick` 用 `fzf`(缺失时报错退出),选中后**委托自身子命令**(`show` / `show -r` / `rm`);列表行上色(fzf 加 `--ansi`),预览强制加 `--color` —— 否则 fzf 预览不是 TTY,颜色会被自动关掉,和直接跑 `show` 不一致。
+- `pick` 用 `fzf`(缺失时报错退出),选中后**委托自身子命令**(`show` / `show -r` / `rm`);开了 `--multi`(`Tab` 多选),`Ctrl-D` 把**全部勾选的**交给 `rm` 批量预览删,`Enter` 多选时依次 `show`;`Ctrl-E` 绑 `rename`(交互式问标题)再 `reload` 刷新列表 —— reload 调内部子命令 `_picklines`(复用 `pick_lines()`;它不在 `<命令>` 帮助里,由 `main()` 提前拦截)。列表行上色(`--ansi`),预览强制加 `--color` —— 否则 fzf 预览不是 TTY,颜色会被自动关掉,和直接跑 `show` 不一致。
 - `show` 在交互终端下读完会问一句"要续聊吗",确认即 `claude --resume`;非 TTY / `--json` / `--pager` 时不问。
 - 项目(文件夹)配色:`project_colors()` 按项目名排序分配 `PROJECT_COLORS` 调色板(`38;5;N` 256 色),出现在 `list` / `pick` / `search` / `show` 的项目列;以**完整会话列表**为基准,所以各命令、各筛选下同一项目颜色一致。改配色改这个常量即可。
 - 输出:尊重 `NO_COLOR`,非 TTY 不上色;`--color` / `--no-color` 强制覆盖(模块级 `_COLOR_MODE`,由 `main()` 设置);默认不分页(便于管道给 `less`/`grep`),`--pager` 才走 `less`;长行不硬截断,交给终端换行。

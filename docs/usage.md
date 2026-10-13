@@ -46,7 +46,7 @@ cgr <命令> -h                        # 某子命令的全部参数
 
 | 完整 | 简写 | 说明 |
 |---|---|---|
-| `--project PROJECT` | `-p PROJECT` | 按项目路径或项目名筛选(子串匹配) |
+| `--project PROJECT` | `-p PROJECT` | 按项目筛选(子串匹配);**可重复或逗号分隔**,多个取并集 |
 | `--since WHEN` | `-s WHEN` | 起始时间:YYYY-MM-DD 或 7d / 2w / 3m / 1y |
 | `--until WHEN` | `-u WHEN` | 截止时间,同上 |
 | `--limit N` | `-l N` | 最多处理 N 个会话 |
@@ -203,7 +203,7 @@ cgr pick [全局参数]
 
 **前提**:它是**交互式**的,必须在真终端里跑;在脚本/管道里调用会直接报错退出(不会卡死等 fzf)。
 
-**典型用法**:`cgr f`,然后打字筛选 → 回车打开 / Ctrl-R 续聊。
+**典型用法**:`cgr f`,打字筛选 → 回车打开 / Ctrl-R 续聊;**按 `Tab` 勾选多个,再 `Ctrl-D` 批量删**(会先预览确认)。
 
 **完整 → 简写**
 
@@ -217,9 +217,11 @@ cgr pick [全局参数]
 
 | 按键 | 动作 | 等价于 |
 |---|---|---|
-| `Enter` | 打开 | `cgr <序号>` |
-| `Ctrl-R` | 续聊 | `cgr <序号> -r` |
-| `Ctrl-D` | 预览删除 | `cgr rm <序号>`(dry-run,不会真删) |
+| `Enter` | 打开(多选时依次打开) | `cgr <序号>` |
+| `Tab` | **多选**(勾选 / 取消勾选) | — |
+| `Ctrl-E` | **改名**(就地输入新标题,改完列表自动刷新) | `cgr rename <序号>` |
+| `Ctrl-R` | 续聊(多选时取第一个) | `cgr <序号> -r` |
+| `Ctrl-D` | **批量**预览删除(对全部勾选的) | `cgr rm <序号...>`(dry-run,不会真删) |
 
 ---
 
@@ -295,6 +297,8 @@ cgr rm <ref...> [--force] [全局参数]
 
 **说明** **默认只预览**(列出将删的:标题、项目、时间、大小、首句),**不会直接删**。
 
+**删什么**:给会话 refs(如 `cgr rm 3 5 8`),或**不给 refs、用 `-p` 按项目批量删**(可多选:`cgr rm -p yazi -p ob笔记`,或 `cgr rm -p yazi,ob笔记`)。两边都不给会报错,不会误删全部。
+
 - **交互终端**:预览后问一句,三选:
   - `y` = **直接删**(不备份)
   - `n` = **删,并备份一份**到 `~/claude-archive`
@@ -312,6 +316,8 @@ cgr rm <ref...> [--force] [全局参数]
 | `cgr rm --force --no-backup 3` | `cgr rm -f --no-backup 3` | 直接删且不备份 |
 | `cgr rm 3 5 8` | `cgr d 3 5 8` | 批量 |
 | `cgr rm --force 3 5 8` | `cgr d 3 5 8 -f` | 批量真删 |
+| `cgr rm --project yazi --force` | `cgr rm -p yazi -f` | 按项目批量删 |
+| `cgr rm --project yazi --project ob笔记 --force` | `cgr rm -p yazi -p ob笔记 -f` | 多项目一起删 |
 
 **例子**
 
@@ -376,14 +382,17 @@ cgr dedupe -f             # 执行:多余副本移入归档
 ## rename — 给会话改名
 
 ```bash
-cgr rename <ref> <新标题> [全局参数]
+cgr rename <ref> [新标题] [全局参数]     # 不给标题则交互式提问
 ```
 
 向会话的 jsonl **追加一条 `custom-title` 记录**(与 Claude Code 自身改名同格式),`list` / `search` 里就显示新标题。只追加一行、不改动已有内容,可反复改。
 
+不给新标题时会**提示输入新标题** —— `cgr f` 里按 `Ctrl-E` 走的就是这条。
+
 ```bash
 cgr rename 3 修 yazi 配置
 cgr rename 9852ae3a "整理笔记"
+cgr rename 3              # 交互式问新标题
 ```
 
 ---
