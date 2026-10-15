@@ -57,8 +57,8 @@ cgr list -S claude    # 不换命令名,用 -S 收窄(可逗号分隔 / 重复)
 
 ## 四、多源之后要重新定义的产品语义
 
-- **序号的基准**:`cgr 3` 指**当前命令看到的那个列表**的第 3 个 —— `cgr` 是混排列表,`cla`/`cod` 是单源列表。`SessionStore` 可以装多个源(并集 → 按时间倒序 → 按 `(source, sid)` 去重),命令层对源一无所知,靠每个 `Session` 自己带的 `source` 分派。
-- **混排时才标来源**:`list` 的「源」列、`pick` 的行首、`search` 的 meta 前缀,都只在**列出来的会话真的横跨多源**时出现(按内容判断)。单源输出因此与从前逐字节一致。
+- **序号的基准**:`cgr 3` 指**当前命令看到的那个列表**的第 3 个 —— `cgr` 多源分段后的页面顺序,`cla`/`cod` 是单源列表。`SessionStore` 可以装多个源:各源的 `discover()` 结果**按源分段接起来**(段序 = 选中源顺序,所以 `-S codex,claude` 能反过来),段内各自按时间倒序,最后按 `(source, sid)` 去重。命令层对源一无所知,靠每个 `Session` 自己带的 `source` 分派。
+- **多源时 `list` 分段、其余按行标来源**:`list` 按源分段并印段标题(`pick` 的行首、`search` 的 meta 前缀没法分段,所以逐行标源名)。都只在**列出来的会话真的横跨多源**时出现(按内容判断)。单源输出因此与从前逐字节一致。
 - **`show --resume`**:按源查表,`resume_argv()` 返回 `None` 就提示而不崩(Codex 命令可能找不到)。
 - **`rm` / 归档**:Claude 走 `backup_session` + manifest;Codex 委托 `codex archive`/`delete`。**两套并存,互不干扰**;`cod purge` 是空操作。
 - **`rename`**:Claude 追加 `custom-title`;Codex 追加 `thread_name` 到索引。
