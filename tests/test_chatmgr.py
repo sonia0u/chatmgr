@@ -16,6 +16,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -627,25 +628,34 @@ class CodexTest(BaseTest):
         os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)  # 我们的变量优先级更高
         self.assertEqual(chatmgr.codex_dir(), self.codex)
 
-    def test_cgr_lists_both_sources_with_source_column(self):
-        """不带 -S 时默认是「全部」(测试里 argv[0] 认不出命令名,也归到全部)。"""
+    def test_cgr_groups_by_source(self):
+        """不带 -S 时默认是「全部」:按源分段,段内各自按时间倒序(测试里 argv[0] 认不出命令名,也归全部)。"""
         self.live("aaaa1111", [user("claude 的会话")])
         self.conv("a", [cmeta("s1"), citem("UserMessage", text="codex 的会话")])
         code, out = self.run_cli("list")
         self.assertEqual(code, 0)
         self.assertIn("2 个会话", out)
-        self.assertIn("Claude", out)
-        self.assertIn("Codex", out)
-        self.assertIn("源", out.splitlines()[0], "混排时必须能看出每行是哪个 agent 的")
+        self.assertIn("Claude (1)", out, "两个源各一段,段标题写明来源和条数")
+        self.assertIn("Codex (1)", out)
 
-    def test_single_source_list_keeps_old_columns(self):
-        """只看一个源时,输出和以前一样 —— 不多出一列「源」。"""
+    def test_grouped_numbering_is_sequential(self):
+        """分段后序号必须是页面顺序 —— 跳号会让人以为坏了。"""
+        self.live("aaaa1111", [user("claude 1")])
+        self.live("bbbb2222", [user("claude 2")])
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="codex 1")])
+        _, out = self.run_cli("list")
+        nums = [ln.split()[0] for ln in out.splitlines()
+                if re.match(r"^\d+\s", ln) and "个会话" not in ln]  # 只认表格行,别把末尾"3 个会话"算进来
+        self.assertEqual(nums, ["1", "2", "3"], f"序号应是连续页面顺序,实际 {nums}")
+
+    def test_single_source_list_keeps_old_shape(self):
+        """只看一个源时,输出和以前一样 —— 不分段、也不多列。"""
         self.live("aaaa1111", [user("只有 claude")])
         self.conv("a", [cmeta("s1"), citem("UserMessage", text="codex 的会话")])
         code, out = self.run_cli("list", "-S", "claude")
         self.assertEqual(code, 0)
         self.assertIn("1 个会话", out)
-        self.assertNotIn("源", out.splitlines()[0])
+        self.assertNotIn("──", out, "单源不该出现段标题")
 
     def test_dash_s_narrows_to_one_source(self):
         self.live("aaaa1111", [user("claude 的会话")])

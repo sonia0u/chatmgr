@@ -543,10 +543,14 @@ class SessionStore:
         return self._cache
 
     def _discover(self) -> list[Session]:
+        # **按源分段**:段序 = 选中源的顺序(所以 -S codex,claude 就能把 Codex 放前面),
+        # 段内各自按最后活动时间倒序。这样序号就是页面顺序 —— 若按时间全局混排,
+        # 分段显示时序号会跳(1,3,5… 然后 2,4,6…),看着像坏了。
         out: list[Session] = []
         for src in self.sources:
-            out.extend(src.discover(self.include_archived))
-        out.sort(key=lambda s: (s.end or s.start or dt.datetime.min, not s.archived), reverse=True)
+            group = src.discover(self.include_archived)
+            group.sort(key=lambda s: (s.end or s.start or dt.datetime.min, not s.archived), reverse=True)
+            out.extend(group)
         if not self.dedupe:
             return out
         # 同一个会话 id 可能落在多个项目文件夹里(在不同目录 resume 过),文件内容会不一致。
@@ -1274,20 +1278,15 @@ def _src(s: Session) -> Source:
     return SOURCES[s.source]
 
 
-#: 来源在列表里的颜色(和 show 里的 [Claude] / [Codex] 标签呼应)
+#: 来源在列表里的颜色(和 show 里的 [Claude] / [Codex] 标签呼应;也是段标题的颜色)
 SOURCE_COLORS = {"claude": "1;34", "codex": "1;35"}
 
 
-def source_tag(s: Session, on: bool) -> str:
-    """多源混排时给每行标出来源 —— 否则看不出这行是哪个 agent 的。"""
-    return paint(_src(s).label, SOURCE_COLORS.get(s.source, "1;36"), on)
-
-
 def mixed(sessions) -> bool:
-    """列出来的会话真的横跨多个源,才值得加"源"那一列。
+    """列出来的会话真的横跨多个源,才值得分段。
 
-    按**内容**而不是按选中的源判断:只装了 Claude 的人跑 `cgr list` 不该平白多一列
-    "Claude"。单源时输出和以前逐字节一致。
+    按**内容**而不是按选中的源判断:只装了 Claude 的人跑 `cgr list` 不该平白多出一段。
+    单源时输出和以前逐字节一致。
     """
     return len({s.source for s in sessions}) > 1
 
@@ -1440,6 +1439,7 @@ def export_json(s: Session, full: bool) -> str:
     return json.dumps(
         {
             "id": s.sid,
+            "source": s.source,  # 脚本靠它分辨是哪个 agent 的记录
             "title": s.title,
             "project": s.project,
             "start": s.start.isoformat() if s.start else None,
@@ -1457,6 +1457,7 @@ def export_json(s: Session, full: bool) -> str:
 def sess_to_dict(s: Session) -> dict:
     return {
         "id": s.sid,
+        "source": s.source,  # cgr 会混排多个源,脚本得能分辨
         "title": s.title,
         "project": s.project,
         "archived": s.archived,
@@ -1475,20 +1476,30 @@ def sess_to_dict(s: Session) -> dict:
 # ---------------------------------------------------------------- 表格
 
 
-def print_table(rows: list[list[str]], max_width: int | None = None):
+def _table_layout(rows: list[list[str]], max_width: int | None = None):
+    """算列宽与列间距。分段打印时也要复用同一套,否则每段各算各的、对不齐。"""
     widths = [max(dwidth(r[i]) for r in rows) for i in range(len(rows[0]))]
     gaps = [2] * (len(widths) - 1)
     if max_width is not None:
         # 塞不下就先把列间距由 2 收到 1(最多省 6~7 列),优先保证不折行 —— 不缩列内容,标题长度不受影响
         while sum(widths) + sum(gaps) > max_width and any(g == 2 for g in gaps):
             gaps[gaps.index(2)] = 1
+    return widths, gaps
+
+
+def _table_line(row: list[str], widths: list[int], gaps: list[int]) -> str:
+    out = []
+    for i, c in enumerate(row):
+        out.append(pad(c, widths[i]))
+        if i < len(gaps):
+            out.append(" " * gaps[i])
+    return "".join(out).rstrip()
+
+
+def print_table(rows: list[list[str]], max_width: int | None = None):
+    widths, gaps = _table_layout(rows, max_width)
     for r in rows:
-        out = []
-        for i, c in enumerate(r):
-            out.append(pad(c, widths[i]))
-            if i < len(gaps):
-                out.append(" " * gaps[i])
-        print("".join(out).rstrip())
+        print(_table_line(r, widths, gaps))
 
 
 # ---------------------------------------------------------------- 子命令
@@ -1507,25 +1518,36 @@ def cmd_list(args, store: SessionStore):
     idx = store.index_map()
     on = color_enabled()
     pcolors = project_colors(store.sessions())
-    multi = mixed(sessions)  # 混排时才加"源"列;单源输出保持和以前逐字节一致
-    rows = [["#", "时间"] + (["源"] if multi else []) + ["项目", "标题", "消息", "大小", "tok"]]
-    for s in sessions:
+    header = ["#", "时间", "项目", "标题", "消息", "大小", "tok"]
+
+    def row(s: Session) -> list[str]:
         title = s.title + ("  [已归档]" if s.archived else "")
-        row = [
+        return [
             paint(str(idx.get(str(s.path), "?")), "1;33", on),  # 序号高亮,便于复制去 show/rm
             fmt_time(s.end or s.start),
-        ]
-        if multi:
-            row.append(source_tag(s, on))
-        row += [
             paint(truncate(s.short_project, 22), pcolors.get(s.short_project, "36"), on),
             truncate(title, 34),
             f"{s.prompts}+{s.replies}",
             human_size(s.size),
             human_tokens(s.tok_io) if s.has_usage else "—",
         ]
-        rows.append(row)
-    print_table(rows, shutil.get_terminal_size((120, 24)).columns)
+
+    budget = shutil.get_terminal_size((120, 24)).columns
+    if not mixed(sessions):
+        print_table([header] + [row(s) for s in sessions], budget)  # 单源:和以前逐字节一致
+    else:
+        # 多源:按源分段(段序 = _discover 的顺序),段标题把来源说清楚,就不用每行再标一列。
+        # 列宽要跨段统一算,否则两段各算各的、对不齐。
+        widths, gaps = _table_layout([header] + [row(s) for s in sessions], budget)
+        print(_table_line(header, widths, gaps))
+        for src in store.sources:
+            group = [s for s in sessions if s.source == src.key]
+            if not group:
+                continue
+            c = SOURCE_COLORS.get(src.key, "1;36")
+            print(paint(f"── {src.label} ({len(group)}) ", c, on) + paint("─" * 24, "2", on))
+            for s in group:
+                print(_table_line(row(s), widths, gaps))
     print(f"\n{len(sessions)} 个会话   (tok = input+output)")
     if store.duplicates:
         print(paint(
