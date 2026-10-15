@@ -68,6 +68,7 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 - **多数据源 = 一个工具多个马甲**(2026-10-15 实现):同一个 `chatmgr.py`,靠"自己被叫什么名字"决定默认源 —— `cgr` / `chatmgr` 管 Claude,`cod` 管 Codex;`-S/--source` 可覆盖。**两个命令的子命令、参数、指认方式完全一致**,只是数据源不同。不换工具、不学新语法。
 - **Codex 的删除 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:它的 CLI(藏在 ChatGPT.app 包里)自带 `archive` / `delete` / `resume`。所以 `cod rm` 的"删并备份"= `codex archive`(挪进它自己的归档,`cod list -a` 看得到,`codex unarchive` 可取回),`~/claude-archive` 那一套**完全不参与 Codex**。
 - **Codex 侧不写启发式噪音过滤器**:它的 `item_completed` 记录本身就是干净的语义骨架(提问 / 回复 / 执行的命令 / 改了哪些文件),注入的脚手架不在里面。相比靠文本前缀猜 `response_item`,这是数量级上的差别(6106 条里真提问只有 342 条)。
+- **改名要写到 Codex 真正读的地方**:它的标题真身是状态库 `state_<N>.sqlite` 的 `threads.name`,不是 `session_index.jsonl`(实测:拿后者里的名字去 `codex archive <名字>` 找不到会话,拿前者就能找到)。所以 `cod rename` 改状态库,顺带补一条 jsonl 镜像;**刻意不动 `updated_at`**,免得把会话顶到侧边栏最前面。
 - **续聊两边都支持,但命令不同**:`claude --resume <id>` / `codex resume <id>`,由数据源自己提供。
 
 ## 非目标(Non-goals)

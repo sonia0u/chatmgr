@@ -47,12 +47,12 @@ cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/sin
 | 2 | 一次对话怎么认出是"一个"会话 | 一个文件 = 一个会话 | **一个 `session_id`,可能横跨多个文件**(靠 `session_meta.payload.session_id` 粘合) |
 | 3 | 哪些是**我的提问** | `type=user` 且过 `_user_text()` | `item_completed` 里 `item.type=="UserMessage"` 的 item |
 | 4 | 回复 / 工具调用 / 噪音 | `assistant` 的 `text`/`tool_use`/`thinking` | `AgentMessage` / `CommandExecution`…/ `Reasoning` |
-| 5 | **标题**从哪来 | 会话内追加的 `custom-title` 记录 | **另一个文件** `session_index.jsonl` 的 `thread_name`(追加式,**取最后一行**) |
+| 5 | **标题**从哪来 | 会话内追加的 `custom-title` 记录 | `state_<N>.sqlite` 的 `threads.name`(**真身**);`session_index.jsonl` 是覆盖更全的镜像,当兜底 |
 | 6 | **token** 从哪来 | `message.usage.*`(input **不含** cache) | 独立的 `token_usage_record` 行(input_tokens **含** cache,要减掉) |
 | 7 | **项目**(cwd)从哪来 | 记录的 `cwd`(带尾随空格,要 strip) | `session_meta.payload.cwd`(可能是 Windows 路径) |
 | 8 | **时间戳** | 记录里的 `timestamp` | 记录顶层的 `timestamp`(全部记录都有) |
 | 9 | 该排除什么 | `subagents/` 是**另一个目录**,天然不扫 | 靠 `thread_source == "user"` 过滤掉 `guardian_review` 子线程 |
-| 10 | 归档 / 删除 / 续聊 | 我们自己的 `~/claude-archive`;`claude --resume` | **它自带**:`codex archive` / `delete` / `resume` |
+| 10 | 归档 / 删除 / 续聊 / 改名 | 我们自己的 `~/claude-archive`;`claude --resume`;追加 `custom-title` | **它自带**:`codex archive` / `delete` / `resume`;改名要写它的状态库 |
 
 ## 四、多源之后要重新定义的产品语义
 
@@ -88,7 +88,8 @@ cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/sin
    反例:走 `response_item` 的话,`role=user` 有 6106 条,真提问只有 342 条,靠文本前缀猜有 4390 个假阳性。
 3. 多文件会话里 **UserMessage 的 `item.id` 互不重复**(15 个多文件会话零重叠)→ 按 `timestamp` 归并即可,不用去重。`ordinal` 是**每文件各自从 0 开始**,不能跨文件排序。
 4. token 字段恒定满足 `cached_input_tokens ⊆ input_tokens`、`reasoning_output_tokens ⊆ output_tokens`、`total_tokens == input+output`(实测 3171 条)。**Codex 的 `input_tokens` 含缓存**,而 Claude 的不含 → 所以 `input = input_tokens − cached_input_tokens`。有实测会话 input 到 18 万,其中 18.3 万是缓存回读。
-5. `~/.codex/session_index.jsonl` 是**追加式**:实测 68 行只有 63 个 id(5 个 id 多行 → Codex 自己改标题就是再追加一行);`updated_at` 非单调;mtime 与会话文件同步;还留着 **20 条"文件已删但索引还在"** 的条目 → 它**不是**从会话文件重新生成的,是独立维护的。**读标题必须取最后一行。** 里面也含 guardian_review 子线程的标题。
+5. `~/.codex/session_index.jsonl` 是**追加**式的:实测 68 行只有 63 个 id(5 个 id 多行);`updated_at` 非单调;mtime 与会话文件同步;还留着 **20 条"文件已删但索引还在"** 的条目 → 它**不是**从会话文件重新生成的。**读标题时同一 id 取最后一行。** 里面也含 guardian_review 子线程的标题。
+   **但它不是标题的真身** —— 见下面第 9 条。
 6. **Codex CLI**:先看 `$PATH` 上的 `codex`(2026-10-15 装的是独立版 `0.162.1`,在 `~/.local/bin/codex` → `~/.codex/packages/standalone/current/bin/codex`);没有才回退到 app 包里自带的那份 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`(`codex-package.json` 里的官方 entrypoint,一个 shim)。子命令:`resume` / `archive` / `unarchive` / `delete` / `fork` / `agents` / `doctor` / `migrate-rollouts` …
    - **`codex resume <SESSION_ID>` 支持 UUID** —— 与 `claude --resume` 对称,所以"续聊"是能做的
    - **`codex archive` / `delete` 存在** —— 所以 Codex 的删除/备份用它自己的,我们不再造 `~/claude-archive` 那一套
@@ -97,7 +98,17 @@ cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/sin
 8. **格式确实在演进,但 jsonl 仍是源头**(2026-10-15 复查)。`codex migrate-rollouts` 说的"paginated thread history"落地成了 `~/.codex/thread_history_1.sqlite`(实测 47MB:`thread_turns` 462 行、`thread_items` 9055 行)。但它的关键字段是 **`thread_history_projection_state.next_rollout_byte_offset`** —— 它记的是"已经投影到 rollout jsonl 的第几个字节",`thread_items` 里存的 `rollout_ordinal` / `item_json` 也是指回 jsonl 的位置。
    ⇒ **它是建在 jsonl 之上的增量索引,不是把 jsonl 搬走**;rollout 文件仍在持续追加(复查当天还新建了 19 个)。所以按 jsonl 解析的做法依然成立。
    将来若真出现"jsonl 不再写、只有 sqlite"的情况,再考虑加一个 sqlite 读取源(`item_type` / `created_at_ms` 都已经是规范化好的字段,读起来比解析 jsonl 还简单)。
-9. **`codex doctor` 自己也报了两条 thread 问题**:`rollout files are missing from the state DB`(增量索引没吃完全部文件)和 `duplicate thread inventory entries found`(**就是 `session_index.jsonl` 里那 5 个重复 id**)。两条都印证了我们的读法:"取最后一行"是对的,索引与投影不是权威全集。
+9. **标题的真身是状态库 `state_<N>.sqlite` 的 `threads.name`,不是 `session_index.jsonl`**(2026-10-15 实测确证)。那张表 41 列,和标题有关的是 `title`(长原文)和 `name`(短名,即界面显示的那个);`archived` / `archived_at` 也在这。
+   铁证是一对探针 —— **`codex archive <名字>` 会按名字找会话**:
+   - 拿写进 `session_index.jsonl` 的名字 → `Error: No active session found matching '…'`
+   - 拿状态库里的名字 → `Archived session …` ✓
+
+   ⇒ 所以 `cod rename` **必须写状态库**;只写 jsonl 是"碰了它的文件却没达到目的"。
+   但 `threads.name` 有 11 行是空的、jsonl 覆盖更全,所以**读的时候两边都读、状态库优先**(实测 43 个会话零冲突,换读法当天标题一个没变)。
+   写状态库时**只改 `name`**:动 `updated_at` / `recency_at` 会把会话顶到 Codex 侧边栏最前面,改个名字不该改变它的时间位置。
+10. **`codex doctor` 也报了两条 thread 问题**:`rollout files are missing from the state DB`(增量索引没吃完全部文件)和 `duplicate thread inventory entries found`(**就是 `session_index.jsonl` 里那 5 个重复 id**)。两条都印证了我们的读法:"取最后一行"是对的,索引与投影不是权威全集。
+11. **归档 / 删除 / 取回都实测通过,不需要 daemon**(2026-10-15 在一个一次性会话上走了完整往返):`codex archive` → 文件从 `sessions/<年>/<月>/<日>/` 挪进 `archived_sessions/`、状态库 `archived=1`、`cod list` 消失而 `cod list -a` 标 `[已归档]`;`codex unarchive` 完整还原。**`cod rm` 的路子是对的。**
+    ⚠️ 但它走的是 Codex 自己的状态库,**手工造的、没登记进库的会话会被拒**(`failed to archive session`)—— 所以 `cod rm` 的成败依赖 Codex 自己的状态是否正常,不是我们能完全掌控的。失败时我们会明确报错并中止,不会删一半。
 
 ### OpenCode(未实现,**会话正文存哪仍未知**)
 
@@ -109,7 +120,9 @@ cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/sin
 
 ## 六、未决 / 待验
 
-- **`cod rename` 写回索引后,Codex 自己认不认?** 已按它的原生机制(追加一行)实现,但**这个假设只有真写一次、再打开 Codex 桌面版看标题变没变,才能确证**。若 Codex 不认(比如它按 `updated_at` 取最新、并列时取先写的),退路是改成"我们自己的覆盖层"(`~/.local/share/cgr/codex-titles.json`,绝不碰 Codex 数据,代价是只有 `cod` 看得到新标题)。
-- **`codex archive` / `delete` 需不需要 app-server daemon?** 帮助里有 `--remote` 和 "shared local app-server daemon" 的措辞,未实测。若需要,写操作应改成提示用户手动处理。
+- **续聊没实跑过**:`codex resume <id>` 命令确认存在、按 id 调用不会歧义,但它一跑就会接管终端开 TUI,没在真实会话上试过。风险低(纯按 id),但如实记一笔。
+- **写状态库有被覆盖的可能**:Codex 应用正开着,它可能在内存里缓存着会话元数据、下次更新时把我们改的 `name` 覆盖回去。实测改名后立刻用 `codex archive <新名字>` 是认的,但**长期会不会被冲掉没有验证**。真被冲掉的话,退路是改成"我们自己的覆盖层"(`~/.local/share/cgr/codex-titles.json`,绝不碰 Codex 数据,代价是只有 `cod` 看得到新名字)。
+- **`state_<N>.sqlite` 的版本号会涨**(现在是 `state_5`)。代码按"取最大的 N"来找,不受影响;但 schema 若是大变,得重新勘查。
 - **跨源入口**(`cgr` 变成"全部")是下一轮的事,见 `prd.md`。
+- **OpenCode 等更多源**:见第五节,会话正文存哪仍未知。
 - **Codex 的 `prompts`**:索引里有已删会话的标题,但没有完整提问流水,形态和 Claude 的 `history.jsonl` 不同,要单独设计。

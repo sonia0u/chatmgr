@@ -38,7 +38,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `~/claude-archive/_dupes/<会话id>.<来源文件夹>.jsonl` | `dedupe` 移入的重复副本(保留不删) |
 | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | **Codex 数据源(只读)**;一个会话可能横跨多个文件 |
 | `~/.codex/archived_sessions/*.jsonl` | Codex 自己的归档(`cod list -a` 才纳入) |
-| `~/.codex/session_index.jsonl` | Codex 的标题索引 `id → thread_name`;**`cod rename` 写这里**(追加式,取最后一行) |
+| `~/.codex/state_<N>.sqlite` | Codex 的**状态库**(`threads` / `thread_dynamic_tools` / …)。**标题的真身是 `threads.name`** —— `cod rename` 写这里,`codex archive <名字>` 也认这里。取最大版本号的那个文件 |
+| `~/.codex/session_index.jsonl` | 标题索引的**镜像**(`id → thread_name`),覆盖比状态库全,**但 Codex 不认它**。我们只在读标题时当兜底、改名时顺带补一条 |
 | `codex`(在 `$PATH` 上,如 `~/.local/bin/codex`) | Codex 独立版 CLI;`cod` 的删/改名/续聊要用它。找不到时回退到 app 包里自带的那份 `/Applications/ChatGPT.app/…/codex-cli/bin/codex` |
 | `~/.codex/thread_history_1.sqlite` | Codex 的 `thread_items` / `thread_turns` —— **建在 rollout jsonl 之上的增量索引**(存的是 byte offset),不是把 jsonl 搬走。**我们不用它**,但它说明格式在演进 |
 | `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` / `$CHATMGR_CODEX_DIR` / `$CHATMGR_CODEX_BIN` / `$CODEX_HOME` | 覆盖上面几个根目录与可执行文件。`$CODEX_HOME` 是 **Codex 自己的**变量,我们必须认(否则用户挪走数据后,我们读一处、删另一处);`$CHATMGR_*` 是我们测试用的,优先级更高 |
@@ -73,7 +74,9 @@ export CHATMGR_CODEX_DIR=/tmp/fake/codex     # 其下需有 sessions/<年>/<月>
 export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"没有 codex"
 ```
 
-**Codex 这边更要紧**:`cod rename` 是**真的写你的 `~/.codex/session_index.jsonl`**,`cod rm` 是**真的调 `codex delete`**。测这两个必须同时设 `CHATMGR_CODEX_DIR`(改到临时目录)和 `CHATMGR_CODEX_BIN`(指向桩脚本),**一个都不能漏**。`tests/` 里的 `CodexTest` 就是这套。
+**Codex 这边更要紧**:`cod rename` 是**真的改你的 `~/.codex/state_<N>.sqlite`**(那是个正在被应用使用的活数据库),`cod rm` 是**真的调 `codex delete` / `archive`**。测这两个必须同时设 `CHATMGR_CODEX_DIR`(改到临时目录,夹具里得有 `state_5.sqlite` 和 `threads(id, name)` 表)和 `CHATMGR_CODEX_BIN`(指向桩脚本),**一个都不能漏**。`tests/` 里的 `CodexTest` 就是这套。
+
+**Codex 侧改动的复验手法**(不用翻 UI):`codex archive <名字>` 会按名字找会话 —— 名字认不认,一跑便知。改完名字用它探一下,再 `unarchive` 还原,就完成了闭环。归档/取回本身也是完全可逆的。
 
 `codex_bin()` 的取值顺序:`$CHATMGR_CODEX_BIN` → `$PATH` 上的 `codex` → app 包内路径。
 `codex_dir()` 的顺序:`$CHATMGR_CODEX_DIR` → `$CODEX_HOME`(Codex 自己的变量)→ `~/.codex`。
@@ -109,7 +112,9 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 - **`event_msg` / `item_completed` 是干净的语义骨架**,里面**不含** `app-context` / `AGENTS.md` / `environment_context` 那些注入脚手架(它们不是 item)。所以 **Codex 侧没有任何启发式噪音过滤器**。反例:若去读 `response_item`,role=user 的记录里真提问只占 1/18(6106 条里 342 条),靠文本前缀猜必错。
 - **一个会话可能横跨多个文件**(续写/分叉),靠 `session_id` 粘合(`session_meta.payload.session_id`;子线程文件带的也是父会话的 id)。各文件的 `item.id` 不重叠,按 `timestamp` 归并即可。**`ordinal` 每个文件各自从 0 开始,不能跨文件排序。**
 - **token 口径和 Claude 是反的**:Codex 的 `input_tokens` **含**缓存(恒定 `cached ⊆ input`、`reasoning ⊆ output`、`total == input+output`)。所以 `input = input_tokens − cached_input_tokens`,否则 `tok` 会虚高。旧版 CLI(0.149 等)**完全不写 token** —— 那种会话 `has_usage=False`,`list` 显示 `—` 而不是 0。
-- **标题在另一个文件里**:`~/.codex/session_index.jsonl` 的 `thread_name`。它是**追加式**的(同一 id 可能多行),所以**必须取最后一行**;它还含 guardian_review 子线程的标题,过滤得靠文件里的 `thread_source`,不能靠它。它里面还留着"文件已删但索引还在"的条目(实测 20 条)—— 这是 Codex 自己的行为,不要去清理。
+- **标题的真身是 `~/.codex/state_<N>.sqlite` 的 `threads.name`,不是 `session_index.jsonl`。** 实测铁证:拿写进 jsonl 的名字去 `codex archive <名字>` → `No active session found matching`;拿状态库里的名字 → 找到并归档。而 `threads.name` 有 11 行是空的、jsonl 覆盖更全,所以**读的时候两边都读、状态库优先**(实测 43 个会话零冲突,改读法当天标题一个没变)。
+  jsonl 仍是**追加**式的(同一 id 可能多行,取最后一行),里面也含 guardian_review 子线程的标题 —— 过滤得靠文件里的 `thread_source`。
+- **`codex doctor` 自己也报了 `duplicate thread inventory entries`** —— 就是 jsonl 里那几个重复 id,印证了"取最后一行"。
 - **`cwd` 可能是 Windows 路径**(`E:\...`)。`Session.short_project` 走 `basename_any()`,同时认 `/` 和 `\` —— 直接用 `Path().name` 在 macOS 上会返回整串。
 - **文件里可能有被截断的坏行**(流式写入的残行)。沿用逐行 try/except。
 
@@ -119,7 +124,7 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 - **删除:备份可选,直删要明示**:`rm` 交互下 `y` = 直接删(不备份)、`n` = 删并备份一份;脚本用 `-f` = 直接删(不备份)。走备份时先 `backup_session()` 成功再删原件,备份失败立即中止、绝不删;直删会明确提示"删了不可恢复"。
 - **归档 = 原样复制 jsonl**(可还原),不是转 markdown。markdown 属于 `export`,是另一条线。
 - **Codex 的删 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:`cod rm` 的 `n`(备份)= `codex archive`(挪进它自己的 `archived_sessions/`,`cod list -a` 看得到,`codex unarchive` 可取回),`y`/`-f`(直删)= `codex delete`,`show -r` = `codex resume <id>`。所以 `~/claude-archive` 和 manifest **完全不参与 Codex**。`cod purge` 因此是空操作(只说明一句)。
-- **改名两边机制不同,但都"写回原处"**:Claude 是往会话 jsonl 追加 `custom-title`;Codex 是往 `session_index.jsonl` **追加一行** `thread_name`(追加而非整文件重写,免得和正在运行的 Codex 抢读改写)。**能不能被 Codex 认到尚未实测确证** —— 见 `docs/sources.md`。
+- **改名两边机制不同,但都"写回原处"**:Claude 是往会话 jsonl 追加 `custom-title`;Codex 是 `UPDATE state_<N>.sqlite` 的 `threads.name`(**不是** `session_index.jsonl` —— 写那里 Codex 认不到,实测过;jsonl 只顺带补一条镜像)。**刻意不动 `updated_at` / `recency_at`**:那会把会话顶到 Codex 侧边栏最前面,改个名字不该改变它的时间位置。
 - **`purge` / `list -a` 不碰 `_dupes/`**:`dedupe` 挪走的重复副本是"刻意保留"的兜底,不算备份。归档扫描统一走 `archive_files()`(排除 `<归档>/_dupes/`),否则 `purge` 会把刻意留的副本一并清掉。要清副本自己 `rm -r <归档>/_dupes`。
 - **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
 

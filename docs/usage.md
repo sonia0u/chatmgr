@@ -31,7 +31,7 @@ cgr <命令> -h                        # 某子命令的全部参数
 |---|---|---|
 | 备份 / 归档 | 我们自己的 `~/claude-archive`(`purge` 清它) | **用 Codex 自带的归档**:`rm` 的"删并备份"= `codex archive`,取回用 `codex unarchive <id>`;`purge` 对 Codex 是空操作 |
 | 续聊 | `claude --resume <id>` | `codex resume <id>` |
-| 改名 | 写回会话 jsonl 的 `custom-title` | 写 `~/.codex/session_index.jsonl` 的 `thread_name` |
+| 改名 | 写回会话 jsonl 的 `custom-title` | 改 Codex 状态库的 `threads.name`(改完 Codex 里也看得见) |
 | `prompts` | 有(读 `~/.claude/history.jsonl`) | 没有对应物,会提示一句 |
 | `dedupe` | 有用(同 id 可能多份) | 无需处理(已按 `session_id` 归组) |
 | token 列 | 一直有 | 旧版 Codex 不记 token,这类会话显示 `—` |
