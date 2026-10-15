@@ -1,17 +1,42 @@
 # cgr 命令手册
 
-`cgr`(=`chatmgr`)—— 管理 `~/.claude/projects/*/*.jsonl` 聊天记录的命令行工具。纯 Python 标准库,无依赖。
+`cgr`(=`chatmgr`)—— 管理 `~/.claude/projects/*/*.jsonl` 聊天记录的命令行工具。纯 Python 标准库,无依赖。管两个数据源:Claude Code 和 Codex。
 
 ## 安装 / 运行
 
 ```bash
 cgr <命令>                          # ~/.local/bin/cgr 已软链到仓库内 chatmgr.py
+cod <命令>                          # 同一份代码,默认源换成 Codex
 python3 /Users/sonia/01_AI/001_code/tools/ChatManager/chatmgr.py <命令>   # 或直接跑
 cgr -h                              # 顶层帮助
 cgr <命令> -h                        # 某子命令的全部参数
 ```
 
 `cgr` 和 `chatmgr` 是同一个文件,两个名字都能用。
+
+## 两个数据源(cgr / cod)
+
+| 命令 | 源 | 记录在哪 |
+|---|---|---|
+| `cgr`(=`chatmgr`) | Claude Code | `~/.claude/projects/<项目>/<会话id>.jsonl` |
+| `cod` | Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` |
+
+- **两个命令的子命令、参数、指认方式完全一样**。本文档里所有的 `cgr xxx` 都适用于 `cod xxx`(把 `cgr` 换成 `cod`)。
+- 不想换命令名,也可以用 `-S` 临时换源:`cgr list -S codex`、`cod list -S claude`。
+- 序号、筛选、搜索都**只在当前源内**,两个源互不干扰。
+
+**两边行为不同的地方:**
+
+| | Claude | Codex |
+|---|---|---|
+| 备份 / 归档 | 我们自己的 `~/claude-archive`(`purge` 清它) | **用 Codex 自带的归档**:`rm` 的"删并备份"= `codex archive`,取回用 `codex unarchive <id>`;`purge` 对 Codex 是空操作 |
+| 续聊 | `claude --resume <id>` | `codex resume <id>` |
+| 改名 | 写回会话 jsonl 的 `custom-title` | 写 `~/.codex/session_index.jsonl` 的 `thread_name` |
+| `prompts` | 有(读 `~/.claude/history.jsonl`) | 没有对应物,会提示一句 |
+| `dedupe` | 有用(同 id 可能多份) | 无需处理(已按 `session_id` 归组) |
+| token 列 | 一直有 | 旧版 Codex 不记 token,这类会话显示 `—` |
+
+Codex 的**删除 / 改名 / 续聊需要一个 `codex` 命令**(本机藏在 ChatGPT.app 包里,不在 PATH)。找不到时**只读功能照常能用**,写操作会明确提示。
 
 ## 怎么读这份文档
 
@@ -73,7 +98,8 @@ cgr <命令> -h                        # 某子命令的全部参数
 | `--until WHEN` | `-u WHEN` | 截止时间,同上 |
 | `--limit N` | `-l N` | 最多处理 N 个会话 |
 | `--json` | `-j` | 机器可读输出(可接 `jq`) |
-| `--archived` | `-a` | 把备份(`~/claude-archive`)也纳入数据源,输出标注 `[已归档]` |
+| `--archived` | `-a` | 把归档也纳入数据源,输出标注 `[已归档]`(Claude 指 `~/claude-archive`,Codex 指它自己的 `archived_sessions/`) |
+| `--source SRC` | `-S SRC` | 选数据源:`claude` 或 `codex`。默认由命令名决定。**大写 S**,别和 `-s`(since)混 |
 | `--color` | — | 强制彩色输出(管道给 `less -R`、或放进 fzf 预览时用) |
 | `--no-color` | — | 关闭彩色输出 |
 

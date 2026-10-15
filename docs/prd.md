@@ -4,9 +4,9 @@
 
 ## 背景 / 目标
 
-Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.jsonl`。这些记录**留着但用不起来**——搜不到、读不了、统计不了。此前只有一个 `list-sessions.sh` 能列出会话(已被 `chatmgr list` 取代并删除)。
+Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.jsonl`,Codex 存成 `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl`。这些记录**留着但用不起来**——搜不到、读不了、统计不了。此前只有一个 `list-sessions.sh` 能列出会话(已被 `chatmgr list` 取代并删除)。
 
-**目标**:一个命令行工具,把聊天记录"用起来"——搜索、阅读、统计、安全删除。
+**目标**:一个命令行工具,把聊天记录"用起来"——搜索、阅读、统计、安全删除。**多个 agent 的记录用同一套命令管**,不换工具。
 
 **为什么自造**:GitHub 同类工具很多(ccpeek、claude-code-history 等),但没有一个是 Python CLI 且贴合本项目的数据结构(中文 `custom-title` 标题、自定义模型名、按项目分目录)。
 
@@ -22,6 +22,8 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 ## 功能规格
 
 ### 子命令
+
+下表对**两个数据源都适用**(命令名换成 `cod` 即管 Codex;个别只在单边有意义的地方见 `docs/usage.md` 的「两个数据源」)。
 
 | 命令 | 作用 |
 |---|---|
@@ -39,7 +41,7 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 
 ### 全局参数(所有子命令一致)
 
-`-p/--project`、`-s/--since`、`-u/--until`、`-l/--limit`、`-j/--json`、`-a/--archived`。
+`-p/--project`、`-s/--since`、`-u/--until`、`-l/--limit`、`-j/--json`、`-a/--archived`、`-S/--source`。
 时间支持 `YYYY-MM-DD` 与 `7d`/`2w`/`3m` 相对写法。
 
 ### 指认会话
@@ -63,6 +65,11 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 - **v1 范围**:`list / search / show / pick / export / stats / rm / purge`,后续加入 `dedupe` / `rename` / `prompts`,共用同一解析层。
 - **命令行要好敲(合用顺手)**:命令名 `cgr`;裸参数分派(`cgr 3` = 打开、`cgr 关键词` = 搜索、不带参数 = 列表);别名只留 `pick`→`f`(其余命令敲全名);`pick` 用 fzf 一步挑;`list` 序号高亮、`search` 命中高亮;`show` 读完可一键续聊。
 
+- **多数据源 = 一个工具多个马甲**(2026-10-15 实现):同一个 `chatmgr.py`,靠"自己被叫什么名字"决定默认源 —— `cgr` / `chatmgr` 管 Claude,`cod` 管 Codex;`-S/--source` 可覆盖。**两个命令的子命令、参数、指认方式完全一致**,只是数据源不同。不换工具、不学新语法。
+- **Codex 的删除 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:它的 CLI(藏在 ChatGPT.app 包里)自带 `archive` / `delete` / `resume`。所以 `cod rm` 的"删并备份"= `codex archive`(挪进它自己的归档,`cod list -a` 看得到,`codex unarchive` 可取回),`~/claude-archive` 那一套**完全不参与 Codex**。
+- **Codex 侧不写启发式噪音过滤器**:它的 `item_completed` 记录本身就是干净的语义骨架(提问 / 回复 / 执行的命令 / 改了哪些文件),注入的脚手架不在里面。相比靠文本前缀猜 `response_item`,这是数量级上的差别(6106 条里真提问只有 342 条)。
+- **续聊两边都支持,但命令不同**:`claude --resume <id>` / `codex resume <id>`,由数据源自己提供。
+
 ## 非目标(Non-goals)
 
 - 不做成本 / 计费估算(见上)。
@@ -73,3 +80,6 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 
 - **MCP**:让 Claude 自己能查询本机历史。解析层已解耦,v2 只需薄薄一层调用。v1 不做。
 - 索引层(SQLite FTS5),仅当会话量增长到即时扫描变慢时再上。
+- **跨源入口**:让 `cgr` 从"Claude 专用"变成"全部源"(再加一个 `cla` 管单个 Claude)。会改掉最常用命令的观感,所以单独一轮做、单独验。**多数据源本身已实现**(见「已确认的产品决策」)。
+- **OpenCode 等更多源**:会话正文存哪**完全未知**,得实际用过再勘查。接入清单见 `docs/sources.md`。
+- **Codex 的 `prompts`**:索引里有已删会话的标题,但没有完整提问流水,形态和 Claude 的 `history.jsonl` 不同,要单独设计。

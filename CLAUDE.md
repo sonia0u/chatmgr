@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-`cgr`(= `chatmgr`)—— 管理 `~/.claude/projects/*/*.jsonl` 聊天记录的命令行工具。纯 Python 标准库、单文件、无依赖、无构建步骤。
+聊天记录管理 CLI,纯 Python 标准库、单文件、无依赖、无构建步骤。管两个数据源:
+
+| 命令 | 源 | 数据 |
+|---|---|---|
+| `cgr` / `chatmgr` | Claude Code | `~/.claude/projects/*/*.jsonl` |
+| `cod` | Codex | `~/.codex/sessions/**/*.jsonl` |
+
+两个命令是**同一个文件的不同软链** —— 靠"自己被叫什么名字"决定默认源(`SOURCE_BY_PROG`),`-S/--source` 可覆盖。子命令、筛选、指认方式完全一致。
 
 ## 标准文件路径
 
@@ -16,26 +23,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `CLAUDE.md` | 本指引(逐条维护,改约定要同步这里) |
 | `docs/prd.md` | 需求 / 功能规格 / 已确认的产品决策 |
 | `docs/usage.md` | 命令手册(每个子命令的详细用法) |
+| `docs/sources.md` | 多数据源:接一个新 agent 要回答的几个问题、代码里要动的几处、以及各源的实测记录 |
 | `tests/test_chatmgr.py` | 最小测试(标准库 unittest;数据全在临时目录,不碰真实记录) |
 
 **仓库外(运行时会访问)**
 
 | 路径 | 说明 |
 |---|---|
-| `~/.local/bin/cgr`(及 `chatmgr`) | 软链 → 仓库内 `chatmgr.py`,让 `cgr` / `chatmgr` 可从任意目录运行 |
-| `~/.claude/projects/<项目>/<会话id>.jsonl` | **数据源(只读)**;子 agent 在 `<会话id>/subagents/` |
+| `~/.local/bin/cgr`(及 `chatmgr`、`cod`) | 软链 → 仓库内 `chatmgr.py`,让命令可从任意目录运行;调用名决定默认源 |
+| `~/.claude/projects/<项目>/<会话id>.jsonl` | **Claude 数据源(只读)**;子 agent 在 `<会话id>/subagents/` |
 | `~/.claude/history.jsonl` | 用户的 prompt 流水(每条 prompt 一行);**`prompts` 子命令读取**,数据源与会话 jsonl 独立 |
 | `~/.claude/settings.json` | 环境配置,含 `cleanupPeriodDays`;**不属于本仓库** |
-| `~/claude-archive/<项目>/<会话id>.jsonl` | 归档/备份,同级有 `manifest.json`;**仓库外**,不入 git |
+| `~/claude-archive/<项目>/<会话id>.jsonl` | Claude 的归档/备份,同级有 `manifest.json`;**仓库外**,不入 git |
 | `~/claude-archive/_dupes/<会话id>.<来源文件夹>.jsonl` | `dedupe` 移入的重复副本(保留不删) |
-| `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` | 覆盖上面两个根目录(测试时用,见「安全测试」) |
+| `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | **Codex 数据源(只读)**;一个会话可能横跨多个文件 |
+| `~/.codex/archived_sessions/*.jsonl` | Codex 自己的归档(`cod list -a` 才纳入) |
+| `~/.codex/session_index.jsonl` | Codex 的标题索引 `id → thread_name`;**`cod rename` 写这里**(追加式,取最后一行) |
+| `/Applications/ChatGPT.app/…/codex-cli/bin/codex` | Codex 自带的 CLI(app 包里,**不在 PATH**);`cod` 的删/改名/续聊要用它 |
+| `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` / `$CHATMGR_CODEX_DIR` / `$CHATMGR_CODEX_BIN` | 覆盖上面几个根目录与可执行文件(测试时用,见「安全测试」) |
 
 ## 常用命令
 
 ```bash
 cgr <命令>                          # ~/.local/bin/cgr 已软链到本文件
-python3 chatmgr.py <命令>           # 或直接跑
+cod <命令>                          # 同一份代码,默认源换成 Codex
+python3 chatmgr.py <命令>           # 或直接跑(不带 -S 时默认走 claude)
 cgr                                 # 不带子命令=list;cgr 3=show 3;cgr 关键词=search
+cgr list -S codex                   # 也可以不换命令名,用 -S 临时换源
 python3 -m py_compile chatmgr.py    # 语法检查
 python3 tests/test_chatmgr.py        # 跑测试(标准库 unittest)
 cgr <命令> -h                        # 看某子命令的全部参数
@@ -49,26 +63,31 @@ cgr <命令> -h                        # 看某子命令的全部参数
 
 ## 安全测试(重要)
 
-工具读的是**真实**的 `~/.claude/projects`。测 `rm` / `purge` 这类破坏性命令时,必须用环境变量把路径指向临时目录,不要碰真实数据:
+工具读的是**真实**的 `~/.claude/projects` 和 `~/.codex`。测破坏性命令时必须用环境变量把路径指向临时目录,不要碰真实数据:
 
 ```bash
 export CLAUDE_CONFIG_DIR=/tmp/fake/config    # 其下需有 projects/<项目>/<会话>.jsonl
-export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
+export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # Claude 的归档目录
+export CHATMGR_CODEX_DIR=/tmp/fake/codex     # 其下需有 sessions/<年>/<月>/<日>/*.jsonl
+export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"没有 codex"
 ```
 
-`CLAUDE_CONFIG_DIR` 决定 `~/.claude` 的位置,`CHATMGR_ARCHIVE_DIR` 决定归档目录。
+**Codex 这边更要紧**:`cod rename` 是**真的写你的 `~/.codex/session_index.jsonl`**,`cod rm` 是**真的调 `codex delete`**。测这两个必须同时设 `CHATMGR_CODEX_DIR`(改到临时目录)和 `CHATMGR_CODEX_BIN`(指向桩脚本),**一个都不能漏**。`tests/` 里的 `CodexTest` 就是这套;`codex_bin()` 的取值顺序是 `$CHATMGR_CODEX_BIN` → `$PATH` 上的 `codex` → app 包内路径。
+
+`CLAUDE_CONFIG_DIR` 决定 `~/.claude` 的位置,`CHATMGR_ARCHIVE_DIR` 决定归档目录,`CHATMGR_CODEX_DIR` 决定 `~/.codex` 的位置。
 
 ## 架构
 
-单文件,但分三层,**上层依赖下层,解析层不依赖 CLI**(便于将来抽成模块或接 MCP):
+单文件,但分层,**上层依赖下层,解析层不依赖 CLI**(便于将来抽成模块或接 MCP):
 
-1. **解析层** —— `SessionStore` / `Session` / `load_session` / `iter_records`:发现并解析 jsonl。
-2. **归档层** —— `backup_session` / `load_manifest` / `save_manifest`:原样复制 jsonl 到归档目录并维护 manifest。
-3. **CLI 层** —— `build_parser` / `cmd_*` / `resolve`。
+1. **数据源层** —— `Source` 基类 + `ClaudeSource` / `CodexSource`(注册在 `SOURCES`)。每个源负责:发现文件并归一化成 `Session`、按时间产出 `(kind, text)` 事件流、`daily_usage()`(供 `stats --by day`)、以及写操作(`resume_argv` / `delete` / `set_title`)。**命令层只认 `Session` 和这两个元组流,所以加一个源 = 补一个实现,基本不用动命令。**
+2. **解析层** —— Claude:`load_session` / `_claude_events` / `_claude_units`。Codex:`_discover_codex` / `_codex_build` / `_codex_items` / `_codex_merged_records`。
+3. **归档层** —— Claude 走 `backup_session` / `load_manifest` / `save_manifest`(原样复制 jsonl + manifest);**Codex 不经过这层**,它调自己自带的 `codex archive` / `delete`。
+4. **CLI 层** —— `build_parser` / `cmd_*` / `resolve` / `source_of`。
 
-数据流:`SessionStore.sessions()` 扫 `projects_dir()` 下的 `*/*.jsonl`(**只扫顶层,不含 `<会话>/subagents/`**),每个文件经 `load_session()` 归一化成 `Session`,按最后活动时间倒序。`--archived` 时额外扫 `archive_dir()/*/*.jsonl`。
+数据流:`SessionStore.sessions()` 委托 `self.source.discover()`,再按最后活动时间倒序、按 `(source, sid)` 去重。Claude 侧扫 `projects_dir()/*/*.jsonl`(**只扫顶层,不含 `<会话>/subagents/`**);Codex 侧扫 `~/.codex/sessions/**/*.jsonl`,**按 `session_id` 把多文件归成一个会话**。一个 store 只装一个源(命令名或 `-S` 决定)。
 
-`iter_events()` / `search_units()` 是**另两条独立的读取路径**,按原始顺序流式产出内容,供 `show` / `search` / `export` 使用(不复用 `load_session` 的聚合结果)。
+`iter_events()` / `search_units()` 是**另两条独立的读取路径**,按原始顺序流式产出内容,供 `show` / `search` / `export` 使用(不复用 `load_session` 的聚合结果);它们按 `s.source` 分派到对应源。
 
 ## 数据模型(需要读代码才看得出的坑)
 
@@ -78,13 +97,25 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 - **噪音**:`attachment` 记录里大量是 `total_tokens_reminder`;assistant 记录里有 `thinking`。搜索默认排除工具返回和 thinking(`--all` 才纳入)。
 - **token** 从 assistant 的 `message.usage` 累加五类:input / output / cache_read / cache_creation / thinking。`list` 显示的 `tok = input+output`,**不含 cache**(cache_read 是重复上下文,计进去会撑爆数字)。`show` 头部和 `stats` 总览**只列非 0 的类型**(代理不报 cache_creation / thinking 时它们恒为 0,列出来像坏了);`stats` 里当 cache_read 大于 input+output 时再附一句说明它是重复回读。
 - **jsonl 是 Claude Code 内部格式,无契约**,随版本变化。所有解析一律逐行 `try/except`、未知 `type` 忽略(见 `iter_records`)。不要硬编码"必需"字段。
-- **同一会话 id 可能落在多个项目文件夹**(在不同 cwd 下 resume 过,或项目文件夹被复制),两份内容会不一致。`SessionStore._discover()` 按 id 去重:保留最后活动最新、且优先活会话的那一份;被丢弃的份数记在 `store.duplicates`,由 `list` 提示。
+- **同一会话 id 可能落在多个项目文件夹**(在不同 cwd 下 resume 过,或项目文件夹被复制),两份内容会不一致。`SessionStore._discover()` 按 `(source, id)` 去重:保留最后活动最新、且优先活会话的那一份;被丢弃的份数记在 `store.duplicates`,由 `list` 提示。
+
+### Codex 的坑(都实测过,别凭直觉改)
+
+- **`thread_source` 是过滤子线程的唯一钥匙**:`session_meta.payload.thread_source` 只有 `user`(真人主线程)和 `guardian_review`(Codex 自派的"审批复核"子线程,内容全是机器文本)。**只收 `user`** —— 子线程不用去算 `parent_thread_id` 那棵树。
+- **`event_msg` / `item_completed` 是干净的语义骨架**,里面**不含** `app-context` / `AGENTS.md` / `environment_context` 那些注入脚手架(它们不是 item)。所以 **Codex 侧没有任何启发式噪音过滤器**。反例:若去读 `response_item`,role=user 的记录里真提问只占 1/18(6106 条里 342 条),靠文本前缀猜必错。
+- **一个会话可能横跨多个文件**(续写/分叉),靠 `session_id` 粘合(`session_meta.payload.session_id`;子线程文件带的也是父会话的 id)。各文件的 `item.id` 不重叠,按 `timestamp` 归并即可。**`ordinal` 每个文件各自从 0 开始,不能跨文件排序。**
+- **token 口径和 Claude 是反的**:Codex 的 `input_tokens` **含**缓存(恒定 `cached ⊆ input`、`reasoning ⊆ output`、`total == input+output`)。所以 `input = input_tokens − cached_input_tokens`,否则 `tok` 会虚高。旧版 CLI(0.149 等)**完全不写 token** —— 那种会话 `has_usage=False`,`list` 显示 `—` 而不是 0。
+- **标题在另一个文件里**:`~/.codex/session_index.jsonl` 的 `thread_name`。它是**追加式**的(同一 id 可能多行),所以**必须取最后一行**;它还含 guardian_review 子线程的标题,过滤得靠文件里的 `thread_source`,不能靠它。它里面还留着"文件已删但索引还在"的条目(实测 20 条)—— 这是 Codex 自己的行为,不要去清理。
+- **`cwd` 可能是 Windows 路径**(`E:\...`)。`Session.short_project` 走 `basename_any()`,同时认 `/` 和 `\` —— 直接用 `Path().name` 在 macOS 上会返回整串。
+- **文件里可能有被截断的坏行**(流式写入的残行)。沿用逐行 try/except。
 
 ## 不可违反的设计约定
 
 - **破坏性操作默认只预览**:`rm` / `purge` / `dedupe` 不加 `--force` 只打印预览;**交互终端下再问一句**(`rm` 用 `_ask_delete()` 三选:y=直删、n=删并备份、其他=取消;`purge` / `dedupe` 用 `_confirm()`);**非 TTY 一律只预览、绝不执行**。这是安全底线,不要加"默认即执行"的开关,脚本里显式用 `--force`。
 - **删除:备份可选,直删要明示**:`rm` 交互下 `y` = 直接删(不备份)、`n` = 删并备份一份;脚本用 `-f` = 直接删(不备份)。走备份时先 `backup_session()` 成功再删原件,备份失败立即中止、绝不删;直删会明确提示"删了不可恢复"。
 - **归档 = 原样复制 jsonl**(可还原),不是转 markdown。markdown 属于 `export`,是另一条线。
+- **Codex 的删 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:`cod rm` 的 `n`(备份)= `codex archive`(挪进它自己的 `archived_sessions/`,`cod list -a` 看得到,`codex unarchive` 可取回),`y`/`-f`(直删)= `codex delete`,`show -r` = `codex resume <id>`。所以 `~/claude-archive` 和 manifest **完全不参与 Codex**。`cod purge` 因此是空操作(只说明一句)。
+- **改名两边机制不同,但都"写回原处"**:Claude 是往会话 jsonl 追加 `custom-title`;Codex 是往 `session_index.jsonl` **追加一行** `thread_name`(追加而非整文件重写,免得和正在运行的 Codex 抢读改写)。**能不能被 Codex 认到尚未实测确证** —— 见 `docs/sources.md`。
 - **`purge` / `list -a` 不碰 `_dupes/`**:`dedupe` 挪走的重复副本是"刻意保留"的兜底,不算备份。归档扫描统一走 `archive_files()`(排除 `<归档>/_dupes/`),否则 `purge` 会把刻意留的副本一并清掉。要清副本自己 `rm -r <归档>/_dupes`。
 - **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
 
@@ -92,7 +123,7 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
 - 子命令别名只保留 `pick`→`f`(常用),其余一律敲全名 —— 集中在模块常量 `SUBCOMMANDS`(其余命令的别名列表为空),`KNOWN_COMMANDS` 供裸参数分派判断。要增删别名改这一处即可。注意别名删掉后,`cgr ls` 这类词会被当成**搜索**(非命令词都走 search)。
-- 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived)。
+- 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived) `-S`(source,取值 `claude`/`codex`;用**大写 S** 避开 `-s`)。默认源由**调用名**决定(`SOURCE_BY_PROG`:`cgr`/`chatmgr`/`chatmgr.py` → claude,`cod` → codex),认不出的名字也回落到 claude。
 - `rm` 的 `refs` 可为空:此时按 `-p` 的筛选批量删;`refs` 与 `-p` 都不给则报错 —— 绝不误删全部。
 - `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。搜索**同时搜标题**(标题不在 `search_units()` 里,得单独对 `s.title` 匹配);结果分**【标题命中】/【内容命中】**两组,内容命中标明所属标题。每个会话默认只展开 `--max-hits`(默认 5)处,`--max-hits 0` 或 `--grep` = 不限。`--grep` 每行前缀标题;`--pick` 把命中的会话送进 `run_picker()`;`--json` 为 `{query, title_matches, content_matches}`;命中来源标签经 `KIND_LABEL` 映射成中文(`user`→你、`assistant`→Claude、`tool`→工具、`thinking`→思考、`tool_result`→工具返回),`--json` 里仍是原始 kind。
 - `list` 的序号列高亮(便于直接拿来 `cgr 3`)。
@@ -120,6 +151,7 @@ export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # 归档目录
 
 - `docs/prd.md` —— 需求、功能规格、已确认的产品决策
 - `docs/usage.md` —— 命令手册(每个子命令的详细用法)
+- `docs/sources.md` —— 多数据源(Claude 之外)的接入清单:接一个新 agent 要回答的 8 个问题、代码里要动的几处、以及已勘查的源记录
 
 (本项目没有 API 集成、也没有图片,故不设 `docs/api/` 与 `docs/images/`;将来真需要再建。`CLAUDE.md` 例外,按 Claude Code 惯例放在仓库根目录。)
 
