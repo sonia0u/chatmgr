@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""chatmgr —— Claude Code 聊天记录管理 CLI
+"""chatmgr —— 聊天记录管理 CLI
 
-把 ~/.claude/projects 下的 jsonl 记录"用起来":搜索 / 阅读 / 统计 / 安全删除。
+把本机 agent 的聊天记录"用起来":搜索 / 阅读 / 统计 / 安全删除。
+
+数据源(命令名决定默认用哪个;`-S/--source` 可覆盖):
+  claude  ~/.claude/projects/<项目>/<会话id>.jsonl        cgr / chatmgr
+  codex   ~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl  cod
 
 分三层:
-  解析层  SessionStore / Session   —— 无 CLI 依赖,可复用(将来可接 MCP)
-  归档层  backup / purge + manifest
+  解析层  Source / SessionStore / Session —— 无 CLI 依赖,可复用(将来可接 MCP)
+  归档层  Claude 用自己的 backup/purge + manifest;
+          Codex 用它自带的 codex archive / delete(所以不另存一份)
   CLI 层  argparse 子命令 + resolve()
 
 仅用标准库。
@@ -15,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import heapq
 import json
 import os
 import re
@@ -72,6 +78,31 @@ def archive_files() -> list[Path]:
     return [p for p in sorted(ad.glob("*/*.jsonl")) if p.parent != dupes]
 
 
+def codex_dir() -> Path:
+    return Path(os.environ.get("CHATMGR_CODEX_DIR") or (Path.home() / ".codex"))
+
+
+def codex_index_file() -> Path:
+    """Codex 的标题索引(id → thread_name)。改名就写这里。"""
+    return codex_dir() / "session_index.jsonl"
+
+
+def codex_bin() -> str | None:
+    """Codex CLI 的位置。找不到返回 None(读相关功能照常,只有删/改名/续聊不可用)。
+
+    app 自带一份(不在 PATH 上),所以除了 $PATH 还要看 app 包里的官方入口。
+    $CHATMGR_CODEX_BIN 置空 = 明确当作"没有 codex"(测试用)。
+    """
+    env = os.environ.get("CHATMGR_CODEX_BIN")
+    if env is not None:
+        return env or None
+    found = shutil.which("codex")
+    if found:
+        return found
+    bundled = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+    return str(bundled) if bundled.is_file() else None
+
+
 TOKEN_KEYS = ("input", "output", "cache_read", "cache_creation", "thinking")
 
 
@@ -113,6 +144,11 @@ def die(msg: str, code: int = 1):
     sys.exit(code)
 
 
+def prog_name() -> str:
+    """当前是以什么命令名被调用的(cgr / chatmgr / cod ...)。提示语里用它,免得串味。"""
+    return os.path.basename(sys.argv[0]) or "cgr"
+
+
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
@@ -144,6 +180,14 @@ def flat(s) -> str:
     标题/项目里若混入换行,会撑破表格行、也会把 fzf 的一条记录拆成两条。
     """
     return " ".join(str(s).split())
+
+
+def basename_any(p) -> str:
+    """取路径最后一段。同时认 / 和 \\ —— 记录里的 cwd 可能是 Windows 路径,
+    而 Path("E:\\a\\b").name 在 macOS 上会把整串当文件名返回。
+    """
+    parts = [x for x in re.split(r"[\\/]+", str(p)) if x]
+    return parts[-1] if parts else str(p)
 
 
 def human_size(n: int) -> str:
@@ -303,14 +347,22 @@ class Session:
     first_prompt: str = ""
     archived: bool = False
     title_explicit: bool = False  # 标题是否来自 custom-title/ai-title/agent-name
+    source: str = "claude"        # 数据源 key(见 SOURCES)
+    paths: tuple[Path, ...] = ()  # 该会话的全部文件;空 = 只有 path 一个
+    has_usage: bool = True        # 该会话到底有没有用量数据(旧版 Codex 不写 token)
 
     @property
     def short_project(self) -> str:
-        return Path(self.project).name or self.project or "?"
+        return basename_any(self.project) or "?"
 
     @property
     def tok_io(self) -> int:
         return self.tokens["input"] + self.tokens["output"]
+
+
+def session_files(s: Session) -> tuple[Path, ...]:
+    """该会话对应的文件。Codex 一个会话可能横跨多个文件(续写/分叉)。"""
+    return s.paths or (s.path,)
 
 
 def iter_records(path: Path):
@@ -441,9 +493,14 @@ def load_session(path: Path, archived: bool = False) -> Session:
 
 
 class SessionStore:
-    """发现并缓存会话。include_archived 时把备份也纳入数据源。"""
+    """发现并缓存会话。include_archived 时把归档也纳入数据源。
 
-    def __init__(self, include_archived: bool = False, dedupe: bool = True):
+    这里的会话全部来自**同一个源**(命令名或 -S 决定),所以排序/序号/去重都在一个源内进行。
+    """
+
+    def __init__(self, include_archived: bool = False, dedupe: bool = True,
+                 source: Source | None = None):
+        self.source = source or SOURCES["claude"]
         self.include_archived = include_archived
         self.dedupe = dedupe
         self._cache: list[Session] | None = None
@@ -455,32 +512,27 @@ class SessionStore:
         return self._cache
 
     def _discover(self) -> list[Session]:
-        out: list[Session] = []
-        pd = projects_dir()
-        if pd.is_dir():
-            for p in sorted(pd.glob("*/*.jsonl")):
-                out.append(load_session(p, archived=False))
-        if self.include_archived:
-            for p in archive_files():
-                out.append(load_session(p, archived=True))
+        out = self.source.discover(self.include_archived)
         out.sort(key=lambda s: (s.end or s.start or dt.datetime.min, not s.archived), reverse=True)
         if not self.dedupe:
             return out
         # 同一个会话 id 可能落在多个项目文件夹里(在不同目录 resume 过),文件内容会不一致。
         # 只保留最新、且优先活会话的那一份,否则列表会出现两行相互矛盾的同一会话。
-        best_title: dict[str, str] = {}
+        # 键带上源:不同源的 id 空间互不相干,撞车了不能当重复吞掉。
+        best_title: dict[tuple[str, str], str] = {}
         for s in out:
             if s.title_explicit:
-                best_title.setdefault(s.sid, s.title)
-        seen: set[str] = set()
+                best_title.setdefault((s.source, s.sid), s.title)
+        seen: set[tuple[str, str]] = set()
         uniq: list[Session] = []
         for s in out:
-            if s.sid in seen:
+            key = (s.source, s.sid)
+            if key in seen:
                 self.duplicates += 1
                 continue
-            seen.add(s.sid)
-            if not s.title_explicit and s.sid in best_title:
-                s.title = best_title[s.sid]  # 借用同一会话另一份里的自定义标题,免得标题忽然变样
+            seen.add(key)
+            if not s.title_explicit and key in best_title:
+                s.title = best_title[key]  # 借用同一会话另一份里的自定义标题,免得标题忽然变样
             uniq.append(s)
         return uniq
 
@@ -546,10 +598,14 @@ def resolve(ref: str, store: SessionStore) -> Session:
 
 
 # ---------------------------------------------------------------- 事件流(供 show / search / export)
+#
+# 每个源各有一套 *事件 / 可搜索单元* 的实现,产出统一的 (kind, text);
+# 对外的 iter_events / search_units 按 session.source 分派(见"数据源"一节)。
+# kind 取值:user / assistant / tool / thinking / tool_result
 
 
-def iter_events(path: Path, full: bool = False):
-    """按原始顺序产出 (kind, text)。kind: user/assistant/tool/thinking/tool_result"""
+def _claude_events(path: Path, full: bool = False):
+    """Claude:按原始顺序产出 (kind, text)。"""
     for rec in iter_records(path):
         t = rec.get("type")
         m = rec.get("message") or {}
@@ -579,8 +635,8 @@ def iter_events(path: Path, full: bool = False):
                     yield ("thinking", x.get("thinking") or "")
 
 
-def search_units(path: Path, include_all: bool = False, role: str | None = None):
-    """产出可搜索单元 (kind, text)。默认:user 输入 + assistant 正文 + 工具调用。"""
+def _claude_units(path: Path, include_all: bool = False, role: str | None = None):
+    """Claude:产出可搜索单元 (kind, text)。默认 user 输入 + assistant 正文 + 工具调用。"""
     for rec in iter_records(path):
         t = rec.get("type")
         m = rec.get("message") or {}
@@ -631,6 +687,490 @@ def load_prompts() -> list[dict]:
             "session": rec.get("sessionId") or "",
         })
     return out
+
+
+# ---------------------------------------------------------------- Codex 解析层
+#
+# Codex 的记录格式和 Claude 完全不同,而且**一个会话可能横跨多个文件**。这里的设计
+# 由三条实测结论支撑(~/.codex 68 个文件 / 43 个会话 / 166MB,全量解析约 0.5s):
+#
+#   1. session_meta.payload.thread_source 只有两个取值:"user"(真人主线程)和
+#      "guardian_review"(Codex 自派的"审批复核"子线程,内容全是机器文本)。
+#      —— 一条规则就能把子线程排干净,不用去算 parent_thread_id 那棵树。
+#
+#   2. event_msg / item_completed 是一份**干净的语义骨架**:UserMessage / AgentMessage /
+#      CommandExecution / FileChange / ... 里面**不含** app-context、AGENTS.md、
+#      environment_context 这些注入脚手架(它们不是 item)。
+#      —— 所以这里完全不需要写启发式噪音过滤器。对比:若去读 response_item,
+#      role=user 的记录里真提问只占 1/18(6106 条中 342 条),靠文本前缀猜必错。
+#
+#   3. ordinal 是**每个文件各自从 0 开始**的,跨文件不能拿来排序 —— 只能按 timestamp。
+
+CODEX_INJECTED = (
+    "# Files mentioned by the user:",
+    "<send_user_message_question_reply>",
+)
+
+#: 归到 `tool` 这个 kind 的 item 类型
+CODEX_TOOL_ITEMS = frozenset(
+    {"CommandExecution", "FileChange", "McpToolCall", "WebSearch", "Extension", "ImageView"}
+)
+
+
+def _codex_msg_text(item) -> str:
+    """取 item 的正文。逐块丢掉已知的注入前言,其余照收。
+
+    这里**不**学 Claude 那套"以 < 开头一律丢":Codex 的真人提问可能就是 markdown。
+    """
+    parts = []
+    for c in item.get("content") or []:
+        if not isinstance(c, dict):
+            continue
+        t = (c.get("text") or "").strip()
+        if not t or t.startswith(CODEX_INJECTED):
+            continue
+        parts.append(t)
+    return "\n".join(parts)
+
+
+def _codex_tool_summary(item) -> str:
+    it = item.get("type")
+    if it == "CommandExecution":
+        cmd = item.get("command")
+        if isinstance(cmd, list):
+            return truncate(" ".join(str(x) for x in cmd), 100)
+        return truncate(str(cmd or "?"), 100)
+    if it == "FileChange":
+        paths = list((item.get("changes") or {}).keys())
+        head = ", ".join(basename_any(p) for p in paths[:3])
+        more = f" 等 {len(paths)} 个文件" if len(paths) > 3 else ""
+        return f"改动 {head}{more}".strip()
+    if it == "McpToolCall":
+        return f"{item.get('server', '?')}.{item.get('tool', '?')}"
+    if it == "WebSearch":
+        return f"搜索 {item.get('query', '')}".strip()
+    if it == "Extension":
+        return f"{item.get('kind', '')} {item.get('query', '')}".strip()
+    if it == "ImageView":
+        return f"看图 {basename_any(item.get('path') or '?')}"
+    return it or "?"
+
+
+def _codex_item_event(item, full: bool):
+    """item → (kind, text);不产出事件时返回 None。"""
+    it = item.get("type")
+    if it == "UserMessage":
+        t = _codex_msg_text(item)
+        return ("user", t) if t else None
+    if it == "AgentMessage":
+        t = _codex_msg_text(item)
+        return ("assistant", t) if t else None
+    if it in CODEX_TOOL_ITEMS:
+        return ("tool", _codex_tool_summary(item))
+    if it == "Reasoning":
+        if not full:
+            return None
+        summary = item.get("summary_text")
+        t = " ".join(str(x) for x in summary) if isinstance(summary, list) else ""
+        return ("thinking", t.strip()) if t.strip() else None
+    # ContextCompaction 等一律忽略:压缩记录会把前面整段历史重述一遍,读出来是重复
+    return None
+
+
+def _codex_add_usage(acc: dict, u: dict):
+    """Codex 的 input_tokens **含**缓存,Claude 的不含 —— 照抄字段会让 tok 虚高。
+
+    实测 3171 条记录恒定满足:cached ⊆ input、reasoning ⊆ output、total == input+output。
+    """
+    cached = u.get("cached_input_tokens") or 0
+    acc["input"] += max(0, (u.get("input_tokens") or 0) - cached)
+    acc["output"] += u.get("output_tokens") or 0
+    acc["cache_read"] += cached
+    acc["cache_creation"] += u.get("cache_write_input_tokens") or 0
+    acc["thinking"] += u.get("reasoning_output_tokens") or 0
+
+
+def _codex_meta(path: Path) -> dict | None:
+    """只读文件开头找 session_meta(实测永远是第 0 条,不必整文件解析)。"""
+    for i, rec in enumerate(iter_records(path)):
+        if rec.get("type") == "session_meta":
+            p = rec.get("payload") or {}
+            return {
+                "sid": p.get("session_id") or p.get("id") or path.stem,
+                "cwd": p.get("cwd") or "",
+                "thread_source": p.get("thread_source") or "",
+            }
+        if i > 20:
+            break
+    return None
+
+
+def _codex_merged_records(files: tuple[Path, ...]):
+    """把同一会话的多个文件按 timestamp 做 k 路归并(不全量载入内存)。"""
+    iters = [iter(iter_records(p)) for p in files]
+    heap: list = []
+    seq = 0
+
+    def advance(fi: int):
+        nonlocal seq
+        for rec in iters[fi]:
+            ts = parse_ts(rec.get("timestamp"))
+            if ts:
+                seq += 1
+                heapq.heappush(heap, (ts, seq, fi, rec))
+                return
+
+    for i in range(len(iters)):
+        advance(i)
+    while heap:
+        _, _, fi, rec = heapq.heappop(heap)
+        yield rec
+        advance(fi)
+
+
+def _codex_items(s: Session):
+    """按时间顺序产出该会话所有 item_completed 里的 item。"""
+    for rec in _codex_merged_records(session_files(s)):
+        if rec.get("type") != "event_msg":
+            continue
+        p = rec.get("payload") or {}
+        if p.get("type") != "item_completed":
+            continue
+        item = p.get("item")
+        if isinstance(item, dict):
+            yield item
+
+
+def _codex_events(s: Session, full: bool = False):
+    for item in _codex_items(s):
+        ev = _codex_item_event(item, full)
+        if ev:
+            yield ev
+
+
+def _codex_units(s: Session, include_all: bool = False, role: str | None = None):
+    """与 Claude 对齐:默认只出 user 提问 + assistant 正文 + 工具调用;
+    thinking 属噪音,--all 才纳入。(Codex 没有"工具返回"这个独立 item。)
+    """
+    for item in _codex_items(s):
+        it = item.get("type")
+        if role == "user" and it != "UserMessage":
+            continue
+        if role == "assistant" and it != "AgentMessage":
+            continue
+        ev = _codex_item_event(item, full=include_all)
+        if not ev:
+            continue
+        if ev[0] == "thinking" and not include_all:
+            continue
+        yield ev
+
+
+def _codex_titles() -> dict[str, str]:
+    """标题索引:id → thread_name。
+
+    这个文件是**追加**式的:同一个 id 可能出现多行(实测 68 行只有 63 个 id,说明
+    Codex 自己改标题就是再追加一行)。所以必须取**最后一行**,否则改名后读到的是旧标题。
+    另外它里面也含 guardian_review 子线程 —— 过滤得靠会话文件里的 thread_source,不能靠这里。
+    """
+    out: dict[str, str] = {}
+    for rec in iter_records(codex_index_file()):
+        sid, name = rec.get("id"), rec.get("thread_name")
+        if isinstance(sid, str) and isinstance(name, str) and name.strip():
+            out[sid] = flat(name)
+    return out
+
+
+def _file_start(p: Path):
+    for rec in iter_records(p):
+        ts = parse_ts(rec.get("timestamp"))
+        if ts:
+            return ts
+    return dt.datetime.min
+
+
+def _codex_build(sid: str, files: tuple[Path, ...], archived: bool, cwd: str, titles: dict) -> Session:
+    s = Session(sid=sid, path=files[0], archived=archived, source="codex", paths=files)
+    s.project = flat(cwd)
+    s.size = sum(p.stat().st_size for p in files if p.exists())
+    s.has_usage = False  # 只有真见到 token_usage_record 才为 True
+    for rec in _codex_merged_records(files):
+        ts = parse_ts(rec.get("timestamp"))
+        if ts:
+            if s.start is None or ts < s.start:
+                s.start = ts
+            if s.end is None or ts > s.end:
+                s.end = ts
+        t = rec.get("type")
+        p = rec.get("payload") or {}
+        if t == "token_usage_record":
+            _codex_add_usage(s.tokens, p.get("usage") or {})
+            s.has_usage = True
+        elif t == "turn_context":
+            if p.get("model"):
+                s.models[p["model"]] += 1
+        elif t == "event_msg" and p.get("type") == "item_completed":
+            item = p.get("item") or {}
+            it = item.get("type")
+            if it == "UserMessage":
+                txt = _codex_msg_text(item)
+                if txt:
+                    s.prompts += 1
+                    if not s.first_prompt:
+                        s.first_prompt = txt
+            elif it == "AgentMessage":
+                if _codex_msg_text(item):
+                    s.replies += 1
+            elif it in CODEX_TOOL_ITEMS:
+                s.tools[it] += 1
+    name = titles.get(sid)
+    s.title_explicit = bool(name)
+    s.title = flat(name or (truncate(s.first_prompt, 60) if s.first_prompt else "(无标题)"))
+    return s
+
+
+def _discover_codex(include_archived: bool) -> list[Session]:
+    d = codex_dir()
+    cands: list[tuple[Path, bool]] = []
+    live = d / "sessions"
+    if live.is_dir():
+        cands += [(p, False) for p in sorted(live.rglob("*.jsonl"))]
+    arch = d / "archived_sessions"
+    if include_archived and arch.is_dir():
+        cands += [(p, True) for p in sorted(arch.glob("*.jsonl"))]
+
+    groups: dict[str, list[Path]] = defaultdict(list)
+    is_arch: dict[str, bool] = {}
+    cwd_of: dict[str, str] = {}
+    for path, archived in cands:
+        m = _codex_meta(path)
+        if not m or m["thread_source"] != "user":  # 排掉 guardian_review 子线程
+            continue
+        sid = m["sid"]
+        groups[sid].append(path)
+        is_arch[sid] = is_arch.get(sid, True) and archived  # 只要有一份没归档就算活会话
+        if m["cwd"] and sid not in cwd_of:
+            cwd_of[sid] = m["cwd"]
+
+    titles = _codex_titles()
+    out = []
+    for sid, files in groups.items():
+        files.sort(key=_file_start)  # path 取最早那份;事件读时再按 timestamp 归并
+        out.append(_codex_build(sid, tuple(files), is_arch[sid], cwd_of.get(sid, ""), titles))
+    return out
+
+
+# ---------------------------------------------------------------- 数据源
+#
+# 每个源负责:发现文件 → 归一化成 Session;按时间产出 (kind, text);以及写操作。
+# 命令层只认 Session 和这两个元组流,所以加一个源 = 补一个实现,不用动命令。
+
+
+def _now_iso_z() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+class Source:
+    key = ""
+    label = ""
+
+    def root(self) -> Path:
+        """数据根目录(用来判断"这个源有没有用过")。"""
+        raise NotImplementedError
+
+    def missing_hint(self) -> str:
+        raise NotImplementedError
+
+    def discover(self, include_archived: bool) -> list[Session]:
+        raise NotImplementedError
+
+    def events(self, s: Session, full: bool = False):
+        raise NotImplementedError
+
+    def units(self, s: Session, include_all: bool = False, role: str | None = None):
+        raise NotImplementedError
+
+    def daily_usage(self, s: Session):
+        """产出 (日期, tok_in, tok_out) —— 每条带时间戳的记录一条,供 stats --by day。
+        非用量记录 tok 记 0,但仍占一条(这样"记录数"这一列和以前一致)。"""
+        raise NotImplementedError
+
+    def resume_argv(self, s: Session) -> list[str] | None:
+        """续聊要执行的命令;None = 当前环境装不了这个能力(调用方应提示而不是崩)。"""
+        raise NotImplementedError
+
+    def delete(self, s: Session, backup: bool) -> str:
+        """执行删除(backup=True 时先备份)。返回一句结果描述;失败**抛异常**,调用方据此中止。"""
+        raise NotImplementedError
+
+    def set_title(self, s: Session, title: str):
+        raise NotImplementedError
+
+
+class ClaudeSource(Source):
+    """Claude Code:一个会话 = 一个 jsonl;归档是我们自己的 ~/claude-archive。"""
+
+    key = "claude"
+    label = "Claude"
+
+    def root(self) -> Path:
+        return projects_dir()
+
+    def missing_hint(self) -> str:
+        return f"找不到 {projects_dir()}(Claude Code 还没用过?)"
+
+    def discover(self, include_archived: bool) -> list[Session]:
+        out: list[Session] = []
+        pd = projects_dir()
+        if pd.is_dir():
+            for p in sorted(pd.glob("*/*.jsonl")):
+                out.append(load_session(p, archived=False))
+        if include_archived:
+            for p in archive_files():
+                out.append(load_session(p, archived=True))
+        return out
+
+    def events(self, s: Session, full: bool = False):
+        return _claude_events(s.path, full=full)
+
+    def units(self, s: Session, include_all: bool = False, role: str | None = None):
+        return _claude_units(s.path, include_all=include_all, role=role)
+
+    def daily_usage(self, s: Session):
+        for rec in iter_records(s.path):
+            ts = parse_ts(rec.get("timestamp"))
+            if not ts:
+                continue
+            if rec.get("type") == "assistant":
+                u = (rec.get("message") or {}).get("usage") or {}
+                yield ts.date(), (u.get("input_tokens") or 0), (u.get("output_tokens") or 0)
+            else:
+                yield ts.date(), 0, 0
+
+    def resume_argv(self, s: Session) -> list[str] | None:
+        return ["claude", "--resume", s.sid]
+
+    def delete(self, s: Session, backup: bool) -> str:
+        dest = None
+        if backup:
+            try:
+                dest = backup_session(s)  # 先备份成功再删;失败即抛,绝不会删未备份的
+            except Exception as e:
+                raise RuntimeError(f"备份失败,已中止(不会删未备份的):{e}") from e
+        try:
+            s.path.unlink()
+        except OSError as e:
+            raise RuntimeError(f"删除失败:{s.path}  {e}" + (f"(备份已在 {dest})" if dest else "")) from e
+        return f"(备份 → {dest})" if dest else "(未备份)"
+
+    def set_title(self, s: Session, title: str):
+        """向 jsonl 追加一条 custom-title(与 Claude Code 自身改名同格式)。"""
+        rec = {"type": "custom-title", "customTitle": title, "sessionId": s.sid}
+        with open(s.path, "rb+") as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() > 0:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":  # 保证追加不会挤到上一行
+                    f.write(b"\n")
+            f.write((json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
+
+
+class CodexSource(Source):
+    """Codex:一个会话可能横跨多个文件;归档/删除用它自带的 codex archive / delete,
+    所以 ~/claude-archive 那一套完全不参与。"""
+
+    key = "codex"
+    label = "Codex"
+
+    def root(self) -> Path:
+        return codex_dir() / "sessions"
+
+    def missing_hint(self) -> str:
+        return f"找不到 {self.root()}(Codex 还没用过?)"
+
+    def discover(self, include_archived: bool) -> list[Session]:
+        return _discover_codex(include_archived)
+
+    def events(self, s: Session, full: bool = False):
+        return _codex_events(s, full=full)
+
+    def units(self, s: Session, include_all: bool = False, role: str | None = None):
+        return _codex_units(s, include_all=include_all, role=role)
+
+    def daily_usage(self, s: Session):
+        for rec in _codex_merged_records(session_files(s)):
+            ts = parse_ts(rec.get("timestamp"))
+            if not ts:
+                continue
+            if rec.get("type") == "token_usage_record":
+                u = (rec.get("payload") or {}).get("usage") or {}
+                cached = u.get("cached_input_tokens") or 0
+                yield ts.date(), max(0, (u.get("input_tokens") or 0) - cached), (u.get("output_tokens") or 0)
+            else:
+                yield ts.date(), 0, 0
+
+    def resume_argv(self, s: Session) -> list[str] | None:
+        b = codex_bin()
+        return [b, "resume", s.sid] if b else None
+
+    def delete(self, s: Session, backup: bool) -> str:
+        """backup=True → codex archive(挪进它自己的归档,可 unarchive 取回);
+        backup=False → codex delete(永久删)。"""
+        cmd = "archive" if backup else "delete"
+        r = subprocess.run([self._bin(), cmd, s.sid], capture_output=True, text=True)
+        if r.returncode != 0:
+            lines = [ln for ln in (r.stderr or r.stdout or "").strip().splitlines() if ln.strip()]
+            raise RuntimeError(lines[-1] if lines else f"codex {cmd} 退出码 {r.returncode}")
+        return "(已归档,codex unarchive 可取回)" if backup else "(codex 永久删除,不可恢复)"
+
+    def set_title(self, s: Session, title: str):
+        """标题索引是追加式的 —— 顺着它自己的机制再追加一行(不整文件重写,
+        免得和正在运行的 Codex 抢读改写)。"""
+        rec = {"id": s.sid, "thread_name": title, "updated_at": _now_iso_z()}
+        p = codex_index_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            # 紧凑分隔符:和 Codex 自己写的行格式一致(不引入多余空格)
+            f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    def _bin(self) -> str:
+        b = codex_bin()
+        if not b:
+            die("找不到 codex 命令 —— 删 / 改名 / 续聊要用它(只读记录不需要)")
+        return b
+
+
+SOURCES: dict[str, Source] = {s.key: s for s in (ClaudeSource(), CodexSource())}
+
+#: 靠"自己被叫什么名字"决定默认源(busybox 那招)。
+#: chatmgr.py 是 run_picker 自己调自己时的 argv[0],必须归到 claude 一族,
+#: 否则 picker 里打开/删除会跳源。
+SOURCE_BY_PROG = {
+    "cgr": "claude",
+    "chatmgr": "claude",
+    "chatmgr.py": "claude",
+    "cod": "codex",
+}
+
+
+def default_source_key() -> str:
+    return SOURCE_BY_PROG.get(os.path.basename(sys.argv[0]), "claude")
+
+
+def source_of(args, key: str | None = None) -> Source:
+    return SOURCES[key or getattr(args, "source", None) or default_source_key()]
+
+
+def iter_events(s: Session, full: bool = False):
+    return SOURCES[s.source].events(s, full=full)
+
+
+def search_units(s: Session, include_all: bool = False, role: str | None = None):
+    return SOURCES[s.source].units(s, include_all=include_all, role=role)
+
+
+def _src(s: Session) -> Source:
+    return SOURCES[s.source]
 
 
 # ---------------------------------------------------------------- 归档层
@@ -688,6 +1228,7 @@ def _safe_name(name: str) -> str:
 
 
 def render_session(s: Session, full: bool, on: bool, proj_color: str = "36") -> str:
+    src = _src(s)
     out = []
     head = f"=== {s.title} ==="
     if s.archived:
@@ -697,24 +1238,28 @@ def render_session(s: Session, full: bool, on: bool, proj_color: str = "36") -> 
     out.append(f"项目: {paint(s.project, proj_color, on)}")
     out.append(f"时间: {span}    会话: {s.sid}")
     toks = s.tokens
-    # 只列非 0 的类型:某些代理不报 cache_creation / thinking,恒为 0 会像"坏了"
-    tok_parts = [f"in {human_tokens(toks['input'])}", f"out {human_tokens(toks['output'])}"]
-    if toks["cache_read"]:
-        tok_parts.append(f"cache_r {human_tokens(toks['cache_read'])}")
-    if toks["cache_creation"]:
-        tok_parts.append(f"cache_w {human_tokens(toks['cache_creation'])}")
-    if toks["thinking"]:
-        tok_parts.append(f"thinking {human_tokens(toks['thinking'])}")
-    out.append(f"消息: {s.prompts} 问 / {s.replies} 答    token: " + " / ".join(tok_parts))
+    if not s.has_usage:
+        tok_line = "未记录(这版没写 token)"  # 旧版 Codex 不记用量;显示 0 会像坏了
+    else:
+        # 只列非 0 的类型:某些代理不报 cache_creation / thinking,恒为 0 会像"坏了"
+        tok_parts = [f"in {human_tokens(toks['input'])}", f"out {human_tokens(toks['output'])}"]
+        if toks["cache_read"]:
+            tok_parts.append(f"cache_r {human_tokens(toks['cache_read'])}")
+        if toks["cache_creation"]:
+            tok_parts.append(f"cache_w {human_tokens(toks['cache_creation'])}")
+        if toks["thinking"]:
+            tok_parts.append(f"thinking {human_tokens(toks['thinking'])}")
+        tok_line = " / ".join(tok_parts)
+    out.append(f"消息: {s.prompts} 问 / {s.replies} 答    token: {tok_line}")
     if s.models:
         out.append("模型: " + ", ".join(f"{m}({c})" for m, c in s.models.most_common()))
     out.append("")
-    for kind, text in iter_events(s.path, full=full):
+    for kind, text in iter_events(s, full=full):
         if kind == "user":
             out.append(paint("[你]", "1;32", on))
             out.append(text.rstrip())
         elif kind == "assistant":
-            out.append(paint("[Claude]", "1;34", on))
+            out.append(paint(f"[{src.label}]", "1;34", on))
             out.append(text.rstrip())
         elif kind == "tool":
             out.append(paint(f"  · {text}", "2", on))
@@ -725,7 +1270,10 @@ def render_session(s: Session, full: bool, on: bool, proj_color: str = "36") -> 
             out.append(paint("  · 思考:", "2", on))
             out.append(paint(_indent(text.rstrip()), "2", on))
         out.append("")
-    out.append(paint(f"→ 继续此对话: claude --resume {s.sid}", "2", on))
+    argv = src.resume_argv(s)
+    if argv:
+        # 显示用短名(codex 可能藏在 app 包里,完整路径印出来太长);执行仍用 argv
+        out.append(paint(f"→ 继续此对话: {src.key} {' '.join(argv[1:])}", "2", on))
     return "\n".join(out)
 
 
@@ -744,11 +1292,11 @@ def export_markdown(s: Session, full: bool) -> str:
     out.append("")
     out.append("---")
     out.append("")
-    for kind, text in iter_events(s.path, full=full):
+    for kind, text in iter_events(s, full=full):
         if kind == "user":
             out += ["## 你", "", text.rstrip(), ""]
         elif kind == "assistant":
-            out += ["## Claude", "", text.rstrip(), ""]
+            out += [f"## {_src(s).label}", "", text.rstrip(), ""]
         elif kind == "tool":
             out += [f"> `{text}`", ""]
         elif kind == "tool_result":
@@ -760,8 +1308,8 @@ def export_markdown(s: Session, full: bool) -> str:
 
 def export_plain(s: Session, full: bool) -> str:
     out = [f"=== {s.title} ===", f"项目: {s.project}", f"时间: {fmt_time(s.start)} ~ {fmt_time(s.end)}", ""]
-    for kind, text in iter_events(s.path, full=full):
-        label = {"user": "[你]", "assistant": "[Claude]", "tool": "  · ", "tool_result": "  · 工具返回:", "thinking": "  · 思考:"}[kind]
+    for kind, text in iter_events(s, full=full):
+        label = {"user": "[你]", "assistant": f"[{_src(s).label}]", "tool": "  · ", "tool_result": "  · 工具返回:", "thinking": "  · 思考:"}[kind]
         out.append(label)
         out.append(text.rstrip())
         out.append("")
@@ -769,7 +1317,7 @@ def export_plain(s: Session, full: bool) -> str:
 
 
 def export_json(s: Session, full: bool) -> str:
-    msgs = [{"kind": k, "text": t} for k, t in iter_events(s.path, full=full)]
+    msgs = [{"kind": k, "text": t} for k, t in iter_events(s, full=full)]
     return json.dumps(
         {
             "id": s.sid,
@@ -851,7 +1399,7 @@ def cmd_list(args, store: SessionStore):
                 truncate(title, 34),
                 f"{s.prompts}+{s.replies}",
                 human_size(s.size),
-                human_tokens(s.tok_io),
+                human_tokens(s.tok_io) if s.has_usage else "—",
             ]
         )
     print_table(rows, shutil.get_terminal_size((120, 24)).columns)
@@ -861,7 +1409,7 @@ def cmd_list(args, store: SessionStore):
             f"⚠ 有 {store.duplicates} 份重复会话(同一 id 落在多个项目文件夹,内容不一致)"
             f",已只保留最新的一份", "2", on))
     if sys.stdout.isatty():  # 只在人看的终端里提示;管道/脚本不打扰
-        print(paint("提示:要筛选 / 打开 / 改名 / 删 → cgr f", "2", on))
+        print(paint(f"提示:要筛选 / 打开 / 改名 / 删 → {prog_name()} f", "2", on))
 
 
 def cmd_prompts(args, store: SessionStore):
@@ -870,6 +1418,10 @@ def cmd_prompts(args, store: SessionStore):
     和 search 的分工:search 搜「会话内容」(含 Claude 回复、工具调用);prompts 只看
     「我问过什么」—— 数据源独立,所以 jsonl 已被删的会话,它的提问仍在这里能翻到。
     """
+    if store.source.key != "claude":
+        print(f"{store.source.label} 没有「提问流水」这种东西 —— 标题看它的标题索引,"
+              f"完整提问用 {prog_name()} list / {prog_name()} search。")
+        return
     if not history_file().is_file():
         die(f"找不到 {history_file()}(还没有提问流水)")
     prompts = load_prompts()
@@ -914,8 +1466,17 @@ def cmd_prompts(args, store: SessionStore):
     print(f"\n{len(prompts)} 条提问")
 
 
+def kind_labels(src: "Source") -> dict:
+    """命中来源的显示名。assistant 用源自己的名字 —— 在 cod 里把 Codex 的回复标成
+    "Claude" 是错的。"""
+    d = dict(KIND_LABEL)
+    d["assistant"] = src.label
+    return d
+
+
 def cmd_search(args, store: SessionStore):
     sessions = apply_filters(store.sessions(), args)
+    labels = kind_labels(store.source)
     if args.limit:
         sessions = sessions[: args.limit]
     flags = re.IGNORECASE if args.ignore_case else 0
@@ -934,7 +1495,7 @@ def cmd_search(args, store: SessionStore):
     cap = 10**9 if (args.grep or args.max_hits == 0) else args.max_hits  # 0 = 不限
 
     # 拼一条"看全部"的完整命令(含当前查询和筛选),提示里直接给可复制的整条
-    q = ["cgr", "search"]
+    q = [prog_name(), "search"]
     if args.regex:
         q.append("--regex")
     if args.role:
@@ -959,7 +1520,7 @@ def cmd_search(args, store: SessionStore):
     for s in sessions:
         count = 0
         snippets = []
-        for kind, text in search_units(s.path, include_all=args.all, role=args.role):
+        for kind, text in search_units(s, include_all=args.all, role=args.role):
             for m in pat.finditer(text):
                 count += 1
                 if len(snippets) < cap:
@@ -1010,7 +1571,7 @@ def cmd_search(args, store: SessionStore):
     if args.grep:  # 平铺:每行带标题,一眼看出是哪次对话里的
         for s, _, sn in content_hits:
             for kind, text in sn:
-                print(f"{_highlight(s.title, pat, on)} › {KIND_LABEL.get(kind, kind)}: {text}")
+                print(f"{_highlight(s.title, pat, on)} › {labels.get(kind, kind)}: {text}")
         if title_hits:
             print(paint(f"— 另有 {len(title_hits)} 个会话是【标题】命中 —", "2", on))
         total = sum(c for _, c, _ in content_hits)
@@ -1022,7 +1583,7 @@ def cmd_search(args, store: SessionStore):
         for s in title_hits:
             print(f"  [{sidx(s)}] {_highlight(s.title, pat, on)}")
             print(f"      {meta(s)}")
-            print(paint(f"      → 打开 cgr {sidx(s)} · 续聊 cgr {sidx(s)} -r", "2", on))
+            print(paint(f"      → 打开 {prog_name()} {sidx(s)} · 续聊 {prog_name()} {sidx(s)} -r", "2", on))
         print()
     if content_hits:
         total = sum(c for _, c, _ in content_hits)
@@ -1031,10 +1592,10 @@ def cmd_search(args, store: SessionStore):
             print(f"  [{sidx(s)}] {_highlight(s.title, pat, on)}  ({c} 处)")  # 标明是哪次对话里的内容
             print(f"      {meta(s)}")
             for kind, text in sn:
-                print(f"      {paint(KIND_LABEL.get(kind, kind), '2', on)}: {text}")
+                print(f"      {paint(labels.get(kind, kind), '2', on)}: {text}")
             if c > len(sn):
                 print(paint(f"      … 另有 {c - len(sn)} 处。全看:{all_cmd}", "2", on))
-            print(paint(f"      → 打开 cgr {sidx(s)} · 续聊 cgr {sidx(s)} -r", "2", on))
+            print(paint(f"      → 打开 {prog_name()} {sidx(s)} · 续聊 {prog_name()} {sidx(s)} -r", "2", on))
             print()
 
 
@@ -1066,12 +1627,16 @@ def _highlight(text: str, pat, on: bool) -> str:
 
 
 def _resume_session(s: Session):
+    src = _src(s)
+    argv = src.resume_argv(s)
+    if not argv:
+        die(f"{src.label} 的续聊在这台机器上不可用 —— 装不了对应的命令行工具")
     cwd = s.project if os.path.isdir(s.project) else None
-    print(f"→ claude --resume {s.sid}  (cwd: {cwd or '未找到,用当前目录'})")
+    print(f"→ {src.key} {' '.join(argv[1:])}  (cwd: {cwd or '未找到,用当前目录'})")
     try:
-        subprocess.run(["claude", "--resume", s.sid], cwd=cwd)
+        subprocess.run(argv, cwd=cwd)
     except FileNotFoundError:
-        die("找不到 claude 命令")
+        die(f"找不到 {argv[0]} 命令")
 
 
 def cmd_show(args, store: SessionStore):
@@ -1132,6 +1697,8 @@ def cmd_picklines(args, store: SessionStore):
 def _filter_args(args) -> list[str]:
     """把当前的筛选选项拼回命令行,供 pick 的 reload 复用。"""
     out: list[str] = []
+    if getattr(args, "source", None):  # 带上源,否则 reload 会跳回默认源
+        out += ["-S", args.source]
     for p in getattr(args, "project", None) or []:
         out += ["-p", p]
     if getattr(args, "since", None):
@@ -1158,9 +1725,13 @@ def run_picker(store: SessionStore, sessions: list[Session], prefill: str = "",
     if not fzf:
         die("没装 fzf —— brew install fzf")
     exe, script = sys.executable, os.path.abspath(__file__)
-    extra = ["-a"] if archived else []  # 委托时要带同样的 -a,否则序号对不上
+    # 委托给自己起的新进程:必须带上源,否则它按 argv[0](chatmgr.py)回到默认源,
+    # 序号会张冠李戴 —— 打开/删除的可能是另一个源的会话。
+    sflag = ["-S", store.source.key]
+    extra = [*sflag] + (["-a"] if archived else [])  # -a 也要带,否则序号对不上
+    sq = " ".join(shlex.quote(x) for x in sflag)
     selfq = f"{shlex.quote(exe)} {shlex.quote(script)}"
-    preview = f"{selfq} show {{2}}"
+    preview = f"{selfq} show {{2}} {sq}"
     if color_enabled():
         preview += " --color"  # 预览在 fzf 里不是 TTY,得强制上色,否则和你直接跑 cgr 不一样
     argv = [
@@ -1178,7 +1749,7 @@ def run_picker(store: SessionStore, sessions: list[Session], prefill: str = "",
         "--height=~90%",  # 自适应:条目少时窗口自动缩,不留空白
     ]
     if reload_cmd:  # 能重生成列表才给 Ctrl-E 改名(改名后 reload 刷新)
-        argv += ["--bind", f"ctrl-e:execute({selfq} rename {{2}})+reload({reload_cmd})",
+        argv += ["--bind", f"ctrl-e:execute({selfq} rename {{2}} {sq})+reload({reload_cmd})",
                  "--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-E 改名 · Ctrl-D 删除(预览)"]
     else:
         argv += ["--header=Enter 打开 · Tab 多选 · Ctrl-R 续聊 · Ctrl-D 删除(预览)"]
@@ -1277,15 +1848,10 @@ def cmd_stats(args, store: SessionStore):
     if args.by == "day":
         days = defaultdict(lambda: {"n": 0, "tok": 0})
         for s in sessions:
-            for rec in iter_records(s.path):
-                ts = parse_ts(rec.get("timestamp"))
-                if not ts:
-                    continue
-                d = ts.date().isoformat()
-                days[d]["n"] += 1
-                if rec.get("type") == "assistant":
-                    u = (rec.get("message") or {}).get("usage") or {}
-                    days[d]["tok"] += (u.get("input_tokens") or 0) + (u.get("output_tokens") or 0)
+            for d, tin, tout in _src(s).daily_usage(s):
+                day = d.isoformat()
+                days[day]["n"] += 1
+                days[day]["tok"] += tin + tout
         rows = [["日期", "记录数", "tok(in+out)"]]
         for d in sorted(days):
             rows.append([d, str(days[d]["n"]), human_tokens(days[d]["tok"])])
@@ -1349,34 +1915,32 @@ def cmd_rm(args, store: SessionStore):
 
     done = []
     for s in targets:
-        dest = None
-        if backup:
-            try:
-                dest = backup_session(s)
-            except Exception as e:
-                print(paint(f"\n备份失败,已中止(不会删未备份的):{s.sid}\n  {e}", "1;31", on))
-                if done:
-                    print("已完成:" + ", ".join(done))
-                sys.exit(1)
         try:
-            s.path.unlink()
-        except OSError as e:
-            print(paint(f"\n删除失败:{s.path}\n  {e}", "1;31", on))
-            if dest:
-                print(f"备份已在:{dest}")
+            note = _src(s).delete(s, backup)
+        except Exception as e:
+            print(paint(f"\n已中止:{s.sid}\n  {e}", "1;31", on))
+            if done:
+                print("已完成:" + ", ".join(done))
             sys.exit(1)
         done.append(s.sid)
-        print(f"  已删 {s.sid[:8]}" + (f"  (备份 → {dest})" if dest else "  (未备份)"))
+        print(f"  已删 {s.sid[:8]}  {note}")
 
     print(f"\n完成:{len(done)} 个会话已删除。")
     if backup:
-        print(paint(f"备份留在 {archive_dir()}(当保险)。要一次清掉全部备份:", "2", on))
-        print(paint("  cgr purge -f", "2", on))
+        if any(s.source == "codex" for s in targets):
+            print(paint("已归档进 Codex 自己的归档目录。要取回:codex unarchive <id>", "2", on))
+        else:
+            print(paint(f"备份留在 {archive_dir()}(当保险)。要一次清掉全部备份:", "2", on))
+            print(paint("  cgr purge -f", "2", on))
     else:
         print(paint("⚠ 这次没备份,删了不可恢复。", "1;33", on))
 
 
 def cmd_purge(args, store: SessionStore):
+    if store.source.key == "codex":
+        print("Codex 的归档由它自己管(codex archive / delete),这里没有本工具存的备份可清。")
+        print("要取回已归档的会话:codex unarchive <id>")
+        return
     ad = archive_dir()
     if not ad.is_dir():
         print(f"归档目录不存在:{ad}")
@@ -1453,7 +2017,12 @@ def cmd_purge(args, store: SessionStore):
 
 def cmd_dedupe(args, store: SessionStore):
     """同一会话 id 有多个副本时,保留最新一份,其余移入归档(不删除)。"""
-    alls = SessionStore(include_archived=args.archived, dedupe=False).sessions()
+    if store.source.key == "codex":
+        # 不是"不支持",是没这回事:Codex 一个会话横跨多个文件时,发现阶段已按
+        # session_id 归成一个会话,不存在重复副本。
+        print("Codex 无需去重:发现时已按 session_id 归组,同一会话不会出现两份。")
+        return
+    alls = SessionStore(include_archived=args.archived, dedupe=False, source=store.source).sessions()
     groups: dict[str, list[Session]] = defaultdict(list)
     for s in alls:
         groups[s.sid].append(s)
@@ -1503,7 +2072,8 @@ def cmd_dedupe(args, store: SessionStore):
 
 
 def cmd_rename(args, store: SessionStore):
-    """给会话改名:向 jsonl 追加一条 custom-title 记录(与 Claude Code 自身改名同格式)。"""
+    """给会话改名。写法由源决定:Claude 是往 jsonl 追加 custom-title 记录;
+    Codex 是往它的标题索引追加一行。"""
     s = resolve(args.ref, store)
     if s.archived:
         die("这是归档副本,不能直接改名;请对活会话改名")
@@ -1511,7 +2081,7 @@ def cmd_rename(args, store: SessionStore):
         title = flat(" ".join(args.title))
     else:  # 没给标题 → 交互式问(供 pick 里 Ctrl-E 调用)
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
-            die("没给新标题;非交互下请写成:cgr rename <ref> <新标题>")
+            die(f"没给新标题;非交互下请写成:{prog_name()} rename <ref> <新标题>")
         try:
             title = flat(input(f"新标题(回车确定 · 留空取消 · 当前:{s.title})= ").strip())
         except (EOFError, KeyboardInterrupt):
@@ -1520,14 +2090,10 @@ def cmd_rename(args, store: SessionStore):
         if not title:
             print("已取消,标题未改。")
             return
-    rec = {"type": "custom-title", "customTitle": title, "sessionId": s.sid}
-    with open(s.path, "rb+") as f:
-        f.seek(0, os.SEEK_END)
-        if f.tell() > 0:
-            f.seek(-1, os.SEEK_END)
-            if f.read(1) != b"\n":  # 保证追加不会挤到上一行
-                f.write(b"\n")
-        f.write((json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
+    try:
+        _src(s).set_title(s, title)
+    except Exception as e:
+        die(f"改名失败:{e}")
     print(f"已改名:[{s.sid[:8]}] → {title}")
 
 
@@ -1542,7 +2108,9 @@ def _common_parser() -> argparse.ArgumentParser:
     common.add_argument("-u", "--until", metavar="WHEN", help="截止时间:YYYY-MM-DD 或 7d/2w/3m")
     common.add_argument("-l", "--limit", type=int, metavar="N", help="最多处理 N 个会话")
     common.add_argument("-j", "--json", action="store_true", help="机器可读输出")
-    common.add_argument("-a", "--archived", action="store_true", help="把备份也纳入数据源")
+    common.add_argument("-a", "--archived", action="store_true", help="把归档也纳入数据源")
+    common.add_argument("-S", "--source", choices=sorted(SOURCES), metavar="SRC",
+                        help="选数据源(" + " / ".join(sorted(SOURCES)) + ");默认看命令名")
     common.add_argument("--color", dest="color", action="store_true", default=None, help="强制彩色输出")
     common.add_argument("--no-color", dest="color", action="store_false", help="关闭彩色输出")
     return common
@@ -1550,9 +2118,10 @@ def _common_parser() -> argparse.ArgumentParser:
 
 def build_parser() -> argparse.ArgumentParser:
     common = _common_parser()
+    prog = prog_name()
     p = argparse.ArgumentParser(
-        prog="cgr",
-        description="Claude Code 聊天记录管理。不带子命令=列表;cgr 3=打开第3个;cgr 关键词=搜索。",
+        prog=prog,
+        description=f"聊天记录管理。不带子命令=列表;{prog} 3=打开第3个;{prog} 关键词=搜索。",
     )
     sub = p.add_subparsers(dest="cmd", metavar="<命令/数字/关键词>")
 
@@ -1584,7 +2153,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("ref", help="id 前缀 / 列表序号 / 标题")
     sp.add_argument("-f", "--full", action="store_true", help="连 thinking 和工具返回一起显示")
     sp.add_argument("--pager", action="store_true", help="用 less 分页")
-    sp.add_argument("-r", "--resume", action="store_true", help="直接 claude --resume 此会话")
+    sp.add_argument("-r", "--resume", action="store_true", help="直接续聊此会话(调对应 agent 的命令)")
     sp.set_defaults(func=cmd_show)
 
     sp = sub.add_parser("pick", aliases=SUBCOMMANDS["pick"], parents=[common],
@@ -1630,15 +2199,20 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _make_store(args) -> SessionStore:
+    return SessionStore(include_archived=getattr(args, "archived", False), source=source_of(args))
+
+
 def main(argv=None):
     global _COLOR_MODE
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "_picklines":  # 内部用:pick 的 reload,不进 <命令> 帮助
         args = _common_parser().parse_args(raw[1:])
         _COLOR_MODE = getattr(args, "color", None)
-        if not projects_dir().is_dir():
-            die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")
-        cmd_picklines(args, SessionStore(include_archived=getattr(args, "archived", False)))
+        src = source_of(args)
+        if not src.root().is_dir():
+            die(src.missing_hint())
+        cmd_picklines(args, _make_store(args))
         return
     # 分派:空→list;选项开头→list;纯数字→show;其他词→search;已知命令/别名→原样
     if not raw:
@@ -1657,9 +2231,11 @@ def main(argv=None):
 
     args = build_parser().parse_args(raw)
     _COLOR_MODE = getattr(args, "color", None)  # --color / --no-color 覆盖自动判断
-    if not projects_dir().is_dir() and args.func is not cmd_purge:
-        die(f"找不到 {projects_dir()}(Claude Code 还没用过?)")
-    store = SessionStore(include_archived=getattr(args, "archived", False))
+    src = source_of(args)
+    # purge 对 Codex 是空操作(它自己的归档自己管),不要求数据源目录存在
+    if not src.root().is_dir() and args.func is not cmd_purge:
+        die(src.missing_hint())
+    store = _make_store(args)
     try:
         args.func(args, store)
     except BrokenPipeError:

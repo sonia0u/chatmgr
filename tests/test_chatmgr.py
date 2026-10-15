@@ -364,5 +364,230 @@ class OutputContractTests(BaseTest):
         self.assertEqual(len(data["content_matches"]), 1)
 
 
+# ---------------------------------------------------------------- Codex 数据源
+
+
+def cmeta(sid, *, cwd="/Users/me/proj", ts="2026-10-15T10:00:00.000Z", thread_source="user"):
+    return {
+        "timestamp": ts, "ordinal": 0, "type": "session_meta",
+        "payload": {"session_id": sid, "cwd": cwd, "thread_source": thread_source},
+    }
+
+
+def citem(kind, *, text=None, ts="2026-10-15T10:00:01.000Z", **extra):
+    item = {"type": kind}
+    if text is not None:
+        item["content"] = [{"type": "text", "text": text}]
+    item.update(extra)
+    return {
+        "timestamp": ts, "ordinal": 1, "type": "event_msg",
+        "payload": {"type": "item_completed", "item": item},
+    }
+
+
+def cusage(*, inp=1000, cached=0, out=50, reasoning=0, ts="2026-10-15T10:00:02.000Z"):
+    return {
+        "timestamp": ts, "ordinal": 2, "type": "token_usage_record",
+        "payload": {"usage": {
+            "input_tokens": inp, "cached_input_tokens": cached,
+            "cache_write_input_tokens": 0, "output_tokens": out,
+            "reasoning_output_tokens": reasoning,
+        }},
+    }
+
+
+class CodexTest(BaseTest):
+    """Codex 源。破坏性命令一律走桩脚本 —— 绝不真跑 codex,更不碰真实 ~/.codex。"""
+
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tmp.name)
+        self.codex = root / "codex"
+        (self.codex / "sessions" / "2026" / "10" / "15").mkdir(parents=True)
+        (self.codex / "archived_sessions").mkdir(parents=True)
+        self.calls = root / "calls.log"
+        stub = root / "codex-stub.sh"
+        stub.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\nexit 0\n', encoding="utf-8")
+        stub.chmod(0o755)
+        self.stub = stub
+        self._env.update({k: os.environ.get(k) for k in ("CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN")})
+        os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)
+        os.environ["CHATMGR_CODEX_BIN"] = str(stub)
+
+    def conv(self, name, records, *, archived=False):
+        d = self.codex / ("archived_sessions" if archived else "sessions/2026/10/15")
+        return write_session(d / f"{name}.jsonl", records)
+
+    def index(self, rows):
+        p = self.codex / "session_index.jsonl"
+        p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+        return p
+
+    def called(self):
+        return self.calls.read_text(encoding="utf-8").split() if self.calls.exists() else []
+
+    def sessions(self, archived=False):
+        return chatmgr.SessionStore(
+            include_archived=archived, source=chatmgr.SOURCES["codex"]).sessions()
+
+    # ---- 发现 / 归组
+
+    def test_groups_multi_file_and_skips_guardian(self):
+        self.conv("main", [cmeta("s1"), citem("UserMessage", text="问题")])
+        self.conv("cont", [cmeta("s1", ts="2026-10-15T10:10:00.000Z"),
+                           citem("AgentMessage", text="回答", ts="2026-10-15T10:10:01.000Z")])
+        self.conv("guard", [cmeta("s2", thread_source="guardian_review"),
+                            citem("UserMessage", text="审批复核(机器写的)")])
+        got = self.sessions()
+        self.assertEqual([s.sid for s in got], ["s1"], "同一 session_id 的多文件应合成一个会话")
+        self.assertEqual(len(got[0].paths), 2)
+        self.assertEqual((got[0].prompts, got[0].replies), (1, 1))
+
+    def test_archived_only_listed_with_flag(self):
+        self.conv("live", [cmeta("s1"), citem("UserMessage", text="活的")])
+        self.conv("arch", [cmeta("s2"), citem("UserMessage", text="归档的")], archived=True)
+        self.assertEqual([s.sid for s in self.sessions()], ["s1"])
+        self.assertEqual(sorted(s.sid for s in self.sessions(archived=True)), ["s1", "s2"])
+
+    # ---- 标题
+
+    def test_title_uses_last_index_line(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="首句")])
+        self.index([
+            {"id": "s1", "thread_name": "旧标题", "updated_at": "2026-10-15T10:00:00.000Z"},
+            {"id": "s1", "thread_name": "新标题", "updated_at": "2026-10-15T10:05:00.000Z"},
+        ])
+        self.assertEqual(self.sessions()[0].title, "新标题",
+                         "索引是追加式的,必须取最后一行,否则改名后读到旧标题")
+
+    def test_title_falls_back_to_first_prompt(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="没有索引时的首句")])
+        self.assertEqual(self.sessions()[0].title, "没有索引时的首句")
+
+    # ---- 事件 / 用量
+
+    def test_item_kinds_map_to_events(self):
+        self.conv("a", [
+            cmeta("s1"),
+            citem("UserMessage", text="我问的"),
+            citem("CommandExecution", command=["/bin/zsh", "-lc", "ls"]),
+            citem("AgentMessage", text="它答的"),
+            citem("Reasoning", text=None, summary_text=["想了下"]),
+        ])
+        s = self.sessions()[0]
+        kinds = [(k, t) for k, t in chatmgr.iter_events(s)]
+        self.assertEqual([k for k, _ in kinds], ["user", "tool", "assistant"],
+                         "默认不出 thinking;ContextCompaction 之类一律忽略")
+        self.assertIn("ls", kinds[1][1])
+        full = [k for k, _ in chatmgr.iter_events(s, full=True)]
+        self.assertIn("thinking", full)
+
+    def test_token_mapping_excludes_cached(self):
+        self.conv("a", [cmeta("s1"), cusage(inp=1000, cached=900, out=50, reasoning=10)])
+        s = self.sessions()[0]
+        self.assertEqual(s.tokens["input"], 100, "input 要减掉缓存:Codex 的 input_tokens 是含缓存的")
+        self.assertEqual(s.tokens["cache_read"], 900)
+        self.assertEqual(s.tokens["output"], 50)
+        self.assertEqual(s.tokens["thinking"], 10)
+        self.assertEqual(s.tok_io, 150)
+
+    def test_session_without_usage_is_flagged(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        s = self.sessions()[0]
+        self.assertFalse(s.has_usage, "没记 token 的会话要能区分于『真的是 0』")
+        _, out = self.run_cli("list", "-S", "codex")
+        self.assertIn("—", out)
+
+    def test_windows_cwd_short_project(self):
+        self.conv("a", [cmeta("s1", cwd="E:\\work\\projB"), citem("UserMessage", text="x")])
+        s = self.sessions()[0]
+        self.assertEqual(s.project, "E:\\work\\projB")
+        self.assertEqual(s.short_project, "projB",
+                         "反斜杠路径在 macOS 上 Path().name 会把整串当文件名")
+
+    # ---- 读命令
+
+    def test_list_show_search_run(self):
+        self.conv("a", [cmeta("s1", cwd="/Users/me/aaa"), citem("UserMessage", text="关键词在这"),
+                        citem("AgentMessage", text="回复里也有关键词")])
+        code, out = self.run_cli("list", "-S", "codex")
+        self.assertEqual(code, 0)
+        self.assertIn("aaa", out)
+        code, out = self.run_cli("show", "s1", "-S", "codex")
+        self.assertIn("关键词在这", out)
+        self.assertIn("[Codex]", out, "回复的标签要用源自己的名字,不能写死 Claude")
+        _, out = self.run_cli("search", "关键词", "-S", "codex")
+        self.assertIn("Codex:", out)
+
+    # ---- 删 / 改名 / 续聊
+
+    def test_rm_noninteractive_never_touches_codex(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        code, out = self.run_cli("rm", "s1", "-S", "codex")
+        self.assertIn("非交互终端", out)
+        self.assertEqual(self.called(), [], "非 TTY 下一律只预览,连 codex 都不能调")
+        self.assertTrue((self.codex / "sessions/2026/10/15/a.jsonl").exists())
+
+    def test_rm_force_delegates_to_codex_delete(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        code, out = self.run_cli("rm", "s1", "-f", "-S", "codex")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.called(), ["delete", "s1"])
+
+    def test_rm_backup_delegates_to_codex_archive(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        s = self.sessions()[0]
+        note = chatmgr.SOURCES["codex"].delete(s, backup=True)
+        self.assertEqual(self.called(), ["archive", "s1"])
+        self.assertIn("归档", note)
+
+    def test_rename_appends_to_index_and_rereads(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="旧的首句")])
+        before = (self.codex / "session_index.jsonl").read_text(encoding="utf-8") if \
+            (self.codex / "session_index.jsonl").exists() else ""
+        code, out = self.run_cli("rename", "s1", "我改的", "-S", "codex")
+        self.assertEqual(code, 0)
+        self.assertIn("我改的", out)
+        self.assertEqual(self.sessions()[0].title, "我改的", "追加后重新读应取到新标题")
+        self.assertGreater((self.codex / "session_index.jsonl").stat().st_size, len(before))
+
+    def test_rename_refuses_archived(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")], archived=True)
+        code, out = self.run_cli("rename", "s1", "改名", "-a", "-S", "codex")
+        self.assertNotEqual(code, 0)
+        self.assertIn("归档", out)
+
+    def test_resume_argv(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        argv = chatmgr.SOURCES["codex"].resume_argv(self.sessions()[0])
+        self.assertEqual(argv, [str(self.stub), "resume", "s1"])
+
+    def test_reads_work_without_codex_binary(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="读我")])
+        os.environ["CHATMGR_CODEX_BIN"] = ""  # 明确当作"没有 codex"
+        self.assertIsNone(chatmgr.codex_bin())
+        code, out = self.run_cli("list", "-S", "codex")
+        self.assertEqual(code, 0)
+        self.assertIn("1 个会话", out)
+        code, out = self.run_cli("rm", "s1", "-f", "-S", "codex")
+        self.assertNotEqual(code, 0)
+        self.assertIn("找不到 codex 命令", out)
+        self.assertEqual(self.called(), [])
+
+    # ---- 命令名决定默认源
+
+    def test_prog_name_selects_source(self):
+        old = sys.argv[0]
+        try:
+            sys.argv[0] = "cod"
+            self.assertEqual(chatmgr.default_source_key(), "codex")
+            sys.argv[0] = "cgr"
+            self.assertEqual(chatmgr.default_source_key(), "claude")
+            sys.argv[0] = "/some/where/chatmgr.py"  # picker 自己调自己时的 argv[0]
+            self.assertEqual(chatmgr.default_source_key(), "claude")
+        finally:
+            sys.argv[0] = old
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
