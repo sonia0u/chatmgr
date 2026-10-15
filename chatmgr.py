@@ -26,6 +26,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import unicodedata
@@ -91,8 +92,23 @@ def codex_dir() -> Path:
 
 
 def codex_index_file() -> Path:
-    """Codex 的标题索引(id → thread_name)。改名就写这里。"""
+    """Codex 的标题索引(id → thread_name)。
+
+    注意:它**不是** Codex 认的那个 —— 实测拿这里写的名字去 `codex archive <名字>`
+    会报 "No active session found",而拿 sqlite 里的旧名字就能找到。真身是
+    `state_*.sqlite` 的 `threads.name`,这个文件只是一份镜像(覆盖更全)。
+    """
     return codex_dir() / "session_index.jsonl"
+
+
+def codex_state_db() -> Path | None:
+    """Codex 的状态库 `state_<N>.sqlite`。版本号会涨(state_5 → state_6),所以取最大的那个。"""
+    best: tuple[int, Path] | None = None
+    for p in codex_dir().glob("state_*.sqlite"):
+        m = re.fullmatch(r"state_(\d+)\.sqlite", p.name)
+        if m and (best is None or int(m.group(1)) > best[0]):
+            best = (int(m.group(1)), p)
+    return best[1] if best else None
 
 
 def codex_bin() -> str | None:
@@ -876,17 +892,32 @@ def _codex_units(s: Session, include_all: bool = False, role: str | None = None)
 
 
 def _codex_titles() -> dict[str, str]:
-    """标题索引:id → thread_name。
+    """id → 标题。两个来源,**状态库优先**:
 
-    这个文件是**追加**式的:同一个 id 可能出现多行(实测 68 行只有 63 个 id,说明
-    Codex 自己改标题就是再追加一行)。所以必须取**最后一行**,否则改名后读到的是旧标题。
-    另外它里面也含 guardian_review 子线程 —— 过滤得靠会话文件里的 thread_source,不能靠这里。
+    1. `session_index.jsonl` —— 追加式(同一 id 可能多行,取**最后一行**),覆盖更全
+       (实测有 10 个会话在状态库里 name 是空的)。它也含 guardian_review 子线程的标题,
+       过滤得靠会话文件里的 thread_source,不能靠这里。
+    2. `state_*.sqlite` 的 `threads.name` —— **Codex 真正认的那个**(拿它去
+       `codex archive <名字>` 能找到会话,拿 jsonl 里的就找不到)。所以它覆盖前者。
+
+    两边都读是为了稳:状态库读不到(没有 / 被锁 / 将来换了 schema)时还有 jsonl 兜底,
+    标题是显示用的,不该因为它让整个命令失败。实测今天 43 个会话两边零冲突。
     """
     out: dict[str, str] = {}
     for rec in iter_records(codex_index_file()):
         sid, name = rec.get("id"), rec.get("thread_name")
         if isinstance(sid, str) and isinstance(name, str) and name.strip():
             out[sid] = flat(name)
+    db = codex_state_db()
+    if db is not None:
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            for sid, name in con.execute("select id, name from threads"):
+                if isinstance(sid, str) and isinstance(name, str) and name.strip():
+                    out[sid] = flat(name)
+            con.close()
+        except sqlite3.Error:
+            pass  # 读不到就只用 jsonl 的
     return out
 
 
@@ -1133,14 +1164,40 @@ class CodexSource(Source):
         return "(已归档,codex unarchive 可取回)" if backup else "(codex 永久删除,不可恢复)"
 
     def set_title(self, s: Session, title: str):
-        """标题索引是追加式的 —— 顺着它自己的机制再追加一行(不整文件重写,
-        免得和正在运行的 Codex 抢读改写)。"""
+        """改 Codex 的标题。
+
+        真身是 `state_*.sqlite` 的 `threads.name` —— 只往 `session_index.jsonl` 追加是
+        **没用**的:实测拿那个名字去 `codex archive <名字>` 报 "No active session found",
+        拿状态库里的名字就能找到。所以先改状态库(它失败就算失败),再补一条 jsonl 镜像
+        (Codex 自己改名也是两处都写;镜像失败不影响改名本身)。
+
+        刻意**不动** `updated_at` / `recency_at`:那会把会话顶到 Codex 侧边栏最前面 ——
+        改个名字不该改变它的时间位置。
+        """
+        db = codex_state_db()
+        if db is None:
+            raise RuntimeError(f"找不到 Codex 的状态库({codex_dir()}/state_*.sqlite)")
+        try:
+            con = sqlite3.connect(db, timeout=5)  # 应用在跑,可能要等锁
+            try:
+                with con:
+                    cur = con.execute("update threads set name=? where id=?", (title, s.sid))
+                    n = cur.rowcount
+            finally:
+                con.close()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"写 Codex 状态库失败:{e}(是不是 Codex 正开着?稍后再试)") from e
+        if not n:
+            raise RuntimeError(f"状态库里没有这个会话:{s.sid}")
+
         rec = {"id": s.sid, "thread_name": title, "updated_at": _now_iso_z()}
         p = codex_index_file()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a", encoding="utf-8") as f:
-            # 紧凑分隔符:和 Codex 自己写的行格式一致(不引入多余空格)
-            f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except OSError:
+            pass  # 镜像写不进去不影响改名(真身在状态库)
 
     def _bin(self) -> str:
         b = codex_bin()

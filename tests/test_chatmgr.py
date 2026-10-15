@@ -16,6 +16,7 @@ import datetime as dt
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -410,14 +411,34 @@ class CodexTest(BaseTest):
         stub.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\nexit 0\n', encoding="utf-8")
         stub.chmod(0o755)
         self.stub = stub
+        # Codex 的真身状态库:标题的真身是这张表的 name 列,不是 session_index.jsonl
+        self.db = self.codex / "state_5.sqlite"
+        con = sqlite3.connect(self.db)
+        con.execute("create table threads (id text primary key, name text)")
+        con.commit()
+        con.close()
         self._env.update({k: os.environ.get(k)
                           for k in ("CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN", "CODEX_HOME")})
         os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)
         os.environ["CHATMGR_CODEX_BIN"] = str(stub)
 
-    def conv(self, name, records, *, archived=False):
+    def conv(self, name, records, *, archived=False, db_name=""):
         d = self.codex / ("archived_sessions" if archived else "sessions/2026/10/15")
-        return write_session(d / f"{name}.jsonl", records)
+        p = write_session(d / f"{name}.jsonl", records)
+        sid = next((r["payload"]["session_id"] for r in records
+                    if r.get("type") == "session_meta"), None)
+        if sid:
+            con = sqlite3.connect(self.db)
+            with con:
+                con.execute("insert or replace into threads(id, name) values (?,?)", (sid, db_name))
+            con.close()
+        return p
+
+    def state_name(self, sid):
+        con = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True)
+        row = list(con.execute("select name from threads where id=?", (sid,)))
+        con.close()
+        return row[0][0] if row else None
 
     def index(self, rows):
         p = self.codex / "session_index.jsonl"
@@ -542,15 +563,33 @@ class CodexTest(BaseTest):
         self.assertEqual(self.called(), ["archive", "s1"])
         self.assertIn("归档", note)
 
-    def test_rename_appends_to_index_and_rereads(self):
-        self.conv("a", [cmeta("s1"), citem("UserMessage", text="旧的首句")])
-        before = (self.codex / "session_index.jsonl").read_text(encoding="utf-8") if \
-            (self.codex / "session_index.jsonl").exists() else ""
+    def test_rename_writes_state_db_and_mirrors_to_index(self):
+        """真身在状态库 —— 只往 session_index.jsonl 追加是没用的(实测 Codex 认不到)。"""
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="首句")], db_name="状态库旧名")
         code, out = self.run_cli("rename", "s1", "我改的", "-S", "codex")
         self.assertEqual(code, 0)
         self.assertIn("我改的", out)
-        self.assertEqual(self.sessions()[0].title, "我改的", "追加后重新读应取到新标题")
-        self.assertGreater((self.codex / "session_index.jsonl").stat().st_size, len(before))
+        self.assertEqual(self.state_name("s1"), "我改的")
+        self.assertIn("我改的", (self.codex / "session_index.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(self.sessions()[0].title, "我改的")
+
+    def test_title_prefers_state_db_over_index(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="首句")], db_name="状态库的名字")
+        self.index([{"id": "s1", "thread_name": "索引里的名字", "updated_at": "x"}])
+        self.assertEqual(self.sessions()[0].title, "状态库的名字",
+                         "Codex 认的是状态库,所以显示也以它为准")
+
+    def test_title_falls_back_to_index_when_state_name_empty(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="首句")])  # 状态库里 name 为空
+        self.index([{"id": "s1", "thread_name": "索引里的名字", "updated_at": "x"}])
+        self.assertEqual(self.sessions()[0].title, "索引里的名字")
+
+    def test_rename_without_state_db_errors(self):
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        self.db.unlink()
+        code, out = self.run_cli("rename", "s1", "改名", "-S", "codex")
+        self.assertNotEqual(code, 0)
+        self.assertIn("状态库", out)
 
     def test_rename_refuses_archived(self):
         self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")], archived=True)
