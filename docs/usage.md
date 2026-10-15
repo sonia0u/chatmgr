@@ -1,6 +1,8 @@
-# cgr 命令手册
+# 聊天记录命令手册
 
-`cgr`(=`chatmgr`)—— 管理 `~/.claude/projects/*/*.jsonl` 聊天记录的命令行工具。纯 Python 标准库,无依赖。管两个数据源:Claude Code 和 Codex。
+`cgr`(=`chatmgr`)—— 管理本机 agent 聊天记录的命令行工具。纯 Python 标准库,无依赖。管两个数据源:Claude Code 和 Codex。
+
+> **本文档统一用 `cgr` 举例。** `cla`(只看 Claude)、`cod`(只看 Codex)敲法**完全一样**,只是看到的数据不同。凡是两边行为有差异的地方,各节里都用 **「Codex 差异」** 标出来。
 
 ## 安装 / 运行
 
@@ -13,7 +15,7 @@ cgr -h                              # 顶层帮助
 cgr <命令> -h                        # 某子命令的全部参数
 ```
 
-`cgr` 和 `chatmgr` 是同一个文件,两个名字都能用。
+`cgr` / `chatmgr` / `cla` / `cod` 是同一个文件的四个软链,四名字都能用 —— **靠命令名决定默认看哪些源**。想加新 agent,以后照这个再建一张软链即可。
 
 ## 三个命令:看全部 / 只看某一个
 
@@ -51,23 +53,25 @@ Codex 的**删除 / 改名 / 续聊需要一个 `codex` 命令**(可能装在 PA
 
 ## 命令一览
 
-下表用 `cgr` 举例 —— 换成 `cla` / `cod` 完全同理(看的数据不同,敲法一样)。
+三个入口见上一节。**子命令**如下(用 `cgr` 举例 —— 换成 `cla` / `cod` 完全同理):
 
-| 完整命令 | 简写 | 作用 |
-|---|---|---|
-| `cgr list` | `cgr` | 列出会话 |
-| `cgr search <词>` | `cgr <词>` | 搜索内容 |
-| `cgr prompts [词]` | — | 列出/搜索**你自己的提问流水**(含 jsonl 已删的会话) |
-| `cgr show <ref>` | `cgr <序号>` | 阅读一个会话 |
-| `cgr pick [词]` | `cgr f` | fzf 交互选择(可加 `词` 初筛) |
-| `cgr export <ref>` | — | 导出 md / txt / json |
-| `cgr stats` | — | 用量统计 |
-| `cgr rm <ref...>` | — | 删除会话(默认预览) |
-| `cgr purge` | — | 清除备份(默认预览) |
-| `cgr dedupe` | — | 合并重复会话(同 id 多份时保留最新,其余移到归档) |
-| `cgr rename <ref> <新标题>` | — | 给会话改名 |
+| 完整命令 | 简写 | 作用 | 支持 Codex? |
+|---|---|---|---|
+| `cgr list` | `cgr` | 列出会话 | ✓ |
+| `cgr search <词>` | `cgr <词>` | 搜索内容 | ✓ |
+| `cgr show <ref>` | `cgr <序号>` | 阅读一个会话 | ✓ |
+| `cgr pick [词]` | `cgr f` | fzf 交互选择(可加 `词` 初筛) | ✓ |
+| `cgr export <ref>` | — | 导出 md / txt / json | ✓ |
+| `cgr stats` | — | 用量统计 | ✓(旧版 Codex 不记 token,显示 `—`) |
+| `cgr rm <ref...>` | — | 删除会话(默认预览) | ✓(走 Codex 自带的 `archive` / `delete`) |
+| `cgr rename <ref> <新标题>` | — | 给会话改名 | ✓(写 Codex 状态库,改完 Codex 里也看得见) |
+| `cgr prompts [词]` | — | **你自己的提问流水**(含 jsonl 已删的会话) | ✗ 只有 Claude 有;`cod prompts` 会提示一句 |
+| `cgr purge` | — | 清除备份(默认预览) | ✗ Codex 的归档由它自己管;`cod purge` 是空操作 |
+| `cgr dedupe` | — | 合并重复会话(同 id 多份时保留最新,其余移到归档) | ✗ Codex 无需处理(已按 `session_id` 归组) |
 
-**裸参数分派**:`cgr`(无参)=列表;`cgr 3`(纯数字)=打开第 3 个;`cgr 9852ae3a`(像 id 前缀)=打开该会话;`cgr 词`(其他词)=搜索「词」。
+**裸参数分派**:`cgr`(无参)=列表;`cgr 3`(纯数字)=打开第 3 个;`cgr 9852ae3a`(像 id 前缀)=打开该会话;`cgr 词`(其他词)=搜索「词」。`cla` / `cod` 同理,只是序号基准换成它们各自看到的列表。
+
+**`-S` 可以顶替命令名**:`cgr list -S claude` ≡ `cla list`。可逗号分隔或重复:`-S claude,codex`。
 
 ## 通用规则(所有命令适用)
 
@@ -128,6 +132,10 @@ cgr list [--project PROJECT] [--since WHEN] [--until WHEN] [--limit N] [--json] 
 
 **说明** 列出所有会话,新的在上。输出列:序号(高亮) · 时间 · 项目 · 标题 · 消息(问+答) · 大小 · tok。`tok = input + output`(**不含 cache**,cache 单独看 `stats`)。
 
+> **Codex 差异**:旧版 Codex 不记 token 的会话,tok 列显示 `—`(而不是 0 —— 那是"没记录",不是"没用量")。
+>
+> **混排时**(`cgr` 或 `-S claude,codex`):会多出一列 **「源」**,标出每行是 `Claude` 还是 `Codex`。只看单源时没有这一列。
+
 同一会话 id 若落在多个项目文件夹(例如在不同目录 resume 过),**只显示最新的一份**,并在末尾提示重复数量。
 
 交互终端下末尾会提示 `提示:要筛选 / 打开 / 改名 / 删 → cgr f` —— `list` 是"看",要操作就用 `pick`。
@@ -169,7 +177,7 @@ cgr search <query> [--case-sensitive] [--regex]
            [--context N] [--max-hits N] [全局参数]
 ```
 
-**说明** **搜索范围**:**标题** + 你的输入 + Claude 正文 + 工具调用(名字和参数);工具返回和 thinking 属噪音,`--all` 才纳入。**默认忽略大小写**;**命中关键词高亮 —— 标题和内容片段里的词都会标**。
+**说明** **搜索范围**:**标题** + 你的输入 + 对方正文(Claude / Codex)+ 工具调用(名字和参数);工具返回和 thinking 属噪音,`--all` 才纳入。**默认忽略大小写**;**命中关键词高亮 —— 标题和内容片段里的词都会标**。
 
 结果分**两组**:
 
@@ -179,6 +187,10 @@ cgr search <query> [--case-sensitive] [--regex]
 每组里每个会话都标了 **项目 · 最后活动时间 · N 问 / M 答**(这个会话有多少条消息),并给出 `→ 打开 cgr <序号> · 续聊 cgr <序号> -r`。
 
 命中行前的标签表示**这个词出现在哪类内容**里:`你`(你的输入)/ `Claude`(正文回复)/ `工具`(工具调用);`--all` 时还会出现 `思考` / `工具返回`。
+
+> **Codex 差异**:在 `cod`(或 `cgr` 的混排结果里)那条回复的标签是 `Codex` 而不是 `Claude` —— 标签跟着**那个会话自己的源**走。另外 Codex 没有"工具返回"这类独立记录,`--all` 只多出 `思考`。
+>
+> **混排时**:`cgr search` 的每个会话摘要行前面会带源名(`Claude · 项目 · …` / `Codex · 项目 · …`),一眼看出是哪边的。
 
 `--grep` 平铺时每行前面也带标题(如 `词 › Claude: …`)。`--json` 输出 `{query, title_matches, content_matches}`。
 
@@ -238,6 +250,10 @@ cgr prompts [词] [-c] [全局参数]
 
 一句话分工:**`search` 搜「会话内容」,`prompts` 只看「我问过什么」**。两者互补。
 
+> **Codex 差异**:Codex **没有**这种提问流水,`cod prompts` 会直接提示一句、不做事。`cgr prompts`(混排)读的仍然是 Claude 的那条流水。
+>
+> 想要 Codex 的提问?用 `cod list` 看标题、`cod search 词` 搜内容 —— 只是没有"连已删会话的提问都能翻到"这个能力。
+
 **输出**:表格 `时间 / 项目 / 提问`,按时间**倒序**(新的在前)。**默认忽略大小写**,`-c` 区分。`-j` 输出 `[{text, time, project, session}]`(含 `session` id,可拿去和 `search` / `show` 对照)。
 
 **常用选项**(其余全局参数见上)
@@ -269,7 +285,11 @@ cgr prompts -j | jq -r '.[].text'   # 只把提问正文抽出来
 cgr show <ref> [--full] [--pager] [--resume] [--json] [全局参数]
 ```
 
-**说明** `<ref>` 的三种写法见上面「[指认会话(ref)](#指认会话ref)」。默认渲染:你的输入 + Claude 正文 + 工具调用(压成一行摘要),**隐藏 thinking 和工具返回**。**交互终端下,读完会问一句"要续聊这个会话吗?[y/N]"**,确认即 `claude --resume`。
+**说明** `<ref>` 的三种写法见上面「[指认会话(ref)](#指认会话ref)」。默认渲染:你的输入 + 对方正文 + 工具调用(压成一行摘要),**隐藏 thinking 和工具返回**。**交互终端下,读完会问一句"要续聊这个会话吗?[y/N]"**,确认即调对应 agent 的续聊命令。
+
+> **Codex 差异**:续聊走 `codex resume <id>`(不是 `claude --resume`);回复的标签是 `[Codex]`;旧版 Codex 不记 token 的会话,头部显示 `token: 未记录`。
+>
+> **混排时**:`show` 的每段回复都标着它自己的源(`[Claude]` / `[Codex]`)。
 
 **完整 → 简写**
 
@@ -277,7 +297,7 @@ cgr show <ref> [--full] [--pager] [--resume] [--json] [全局参数]
 |---|---|---|
 | `cgr show 3` | `cgr 3` | 纯数字分派,省掉动词 |
 | `cgr show --full 3` | `cgr show -f 3` | `-f`:连思考 / 工具返回一起显示 |
-| `cgr show --resume 3` | `cgr 3 -r` | `-r`:直接 `claude --resume` 接着聊 |
+| `cgr show --resume 3` | `cgr 3 -r` | `-r`:直接续聊(`claude --resume` / `codex resume`) |
 | `cgr show --pager 3` | `cgr 3 --pager` | `--pager`:用 `less` 分页翻看 |
 | `cgr show --json 3` | `cgr 3 -j` | `-j`:输出 JSON(给脚本) |
 | `cgr show 词 --full --pager` | `cgr 词 -f --pager` | 按标题 + 组合 |
@@ -320,6 +340,10 @@ cgr pick [词] [全局参数]        # 最常用就是 cgr f(不给词);给了�
 
 **典型用法**:`cgr f`,打字筛选 → 回车打开 / Ctrl-R 续聊;**按 `Tab` 勾选多个,再 `Ctrl-D` 删除**(会先预览确认)。
 
+> **混排时**:每行标题前面会带源名(`Claude …` / `Codex …`);续聊 / 删除 / 改名都按**那行自己的源**走,不会张冠李戴。
+
+> **Codex 差异**:若本机找不到 `codex` 命令,Ctrl-R(续聊)与 Ctrl-D(删除)会明确报错、不会静默失败;打开和浏览不受影响。
+
 **完整 → 简写**
 
 | 完整写法 | 简写 | 说明 |
@@ -351,6 +375,8 @@ cgr export <ref> [--format {md,txt,json}] [--out FILE] [--full] [--pager] [全�
 
 **说明** 把会话导出成文件或打印。`md` 默认;`json` 给机器;`txt` 纯文本。
 
+> **Codex 差异**:只是正文小标题跟着源走(`## Claude` → `## Codex`),其余一样。JSON 里的 `messages[].kind` 取值不变(`user` / `assistant` / `tool` / `thinking`)。
+
 **完整 → 简写**
 
 | 完整写法 | 简写 | 说明 |
@@ -379,6 +405,8 @@ cgr stats [--by {day,project,model,tool}] [全局参数]
 ```
 
 **说明** 不带 `--by` 给总览:会话数、问答数、时间跨度、各 token 类型合计(**为 0 的类型不列出**)、模型与工具分布。`cache_read` 是每轮重复回读的缓存上下文,累加后远大于 `input`/`output`,**不等于新增用量**。**不计算成本**(本项目走订阅代理,无单 token 价格)。
+
+> **Codex 差异**:① **旧版 Codex CLI(0.149 等)完全不写 token**,这类会话记为"未记录"(列表里显示 `—`),不参与合计;`--by day` 里它们那天记录数照算、tok 是 0。② Codex 的 `input_tokens` **本来含缓存**,我们已经减掉了,所以 `input` 的口径和 Claude 一致(都是"不含缓存回读")。③ `--by tool` 列的是 Codex 的动作类型(`CommandExecution` / `FileChange` / …)。
 
 **完整 → 简写**
 
@@ -420,6 +448,12 @@ cgr rm <ref...> [--force] [全局参数]
 
 选 `n` 时:先备份成功 → 再删原件,备份失败立即中止、绝不删。选 `y` 或 `-f` 则**不备份**,删了不可恢复(会明确提示)。
 
+> **Codex 差异**:Codex 的删除/备份**用它自己的机制** —— `n`(删并备份)= `codex archive`(挪进它自己的归档目录,`cod list -a` 能看到 `[已归档]`,取回用 `codex unarchive <id>`),`y` / `-f`(直删)= `codex delete`。**不经过 `~/claude-archive`**,所以 `purge` 管不到它,你也不用管。
+>
+> 前提是本机能找到 `codex` 命令(路径上或 ChatGPT.app 包里)。找不到时只读功能照常,`rm` 会明确报错、不会删一半。
+
+**Codex 的归档不是"我们存的一份备份",是 Codex 自己的状态**,所以它和 Claude 那套 `~/claude-archive` 互不相干、各管各的。
+
 **完整 → 简写**
 
 | 完整写法 | 简写 | 说明 |
@@ -450,6 +484,8 @@ cgr purge [refs...] [--older-than DAYS] [--force] [全局参数]
 
 **说明** 操作对象是 `~/claude-archive` 里的备份,**不是活会话**。**默认只预览**;交互终端下问 `[y/N]`,按 `y` 才清(脚本用 `-f`)。**默认不清"孤儿备份"**(原件已删、只剩备份的)——它们恰恰最该留。`dedupe` 挪进 `_dupes/` 的重复副本也不算备份,**`purge` 不碰**(要清自己 `rm -r ~/claude-archive/_dupes`)。
 
+> **Codex 差异**:这里**只清 Claude 的备份**。Codex 的归档在它自己的目录里、由 `codex archive` / `delete` / `unarchive` 管,所以 `cod purge` 是空操作(只提示一句)。
+
 **完整 → 简写**
 
 | 完整写法 | 简写 | 说明 |
@@ -479,6 +515,8 @@ cgr dedupe [-f] [全局参数]
 
 预览会列出每组:保留哪份、移走哪份。默认只预览,交互下问 `[y/N]`,`-f` 直接执行。
 
+> **Codex 差异**:Codex **无需去重** —— 发现阶段已按 `session_id` 把多文件归成一个会话,不存在重复副本。`cod dedupe` 会提示一句、不做事。`cgr dedupe` 处理的是 Claude 那部分。
+
 ```bash
 cgr dedupe                # 预览重复组
 cgr dedupe -f             # 执行:多余副本移入归档
@@ -494,7 +532,11 @@ cgr dedupe -f             # 执行:多余副本移入归档
 cgr rename <ref> [新标题] [全局参数]     # 不给标题则交互式提问
 ```
 
-向会话的 jsonl **追加一条 `custom-title` 记录**(与 Claude Code 自身改名同格式),`list` / `search` 里就显示新标题。只追加一行、不改动已有内容,可反复改。
+向会话**写回改名**,`list` / `search` 里就显示新标题。只追加 / 只改一个字段,不动已有内容,可反复改。
+
+> **Codex 差异**:Claude 是往会话 jsonl 追加一条 `custom-title` 记录(与 Claude Code 自身改名同格式);**Codex 是改它状态库 `state_<N>.sqlite` 的 `threads.name`** —— 因为实测 Codex 只认那里,写索引文件它认不到。改完 **Codex 桌面版里也看得见新标题**。
+>
+> 刻意**不改 `updated_at`**:改个名字不该把会话顶到 Codex 侧边栏最前面。
 
 不给新标题时会**提示输入新标题** —— `cgr f` 里按 `Ctrl-E` 走的就是这条。
 
@@ -510,14 +552,18 @@ cgr rename 3                           # 不给标题 → 交互式输入
 
 | 命令 | 场景 |
 |---|---|
-| `cgr` | 看有哪些会话 |
+| `cgr` | 看有哪些会话(**Claude + Codex 混排**) |
+| `cla` | 只想看 Claude(等价 `cgr -S claude`) |
+| `cod` | 只想看 Codex(等价 `cgr -S codex`) |
 | `cgr f` | 交互浏览,选中即打开 |
-| `cgr 词` | 找"上次在哪聊过某词" |
-| `cgr prompts 词` | 在**我问过的提问**里找(连 jsonl 已删的会话都能翻到) |
-| `cgr 3` | 读第 3 个会话 |
-| `cgr 3 -r` | 读完接着聊 |
+| `cgr 词` | 找"上次在哪聊过某词" —— 两个 agent 一次搜遍 |
+| `cgr prompts 词` | 在**我问过的提问**里找(连 jsonl 已删的会话都能翻到;**只有 Claude 有**) |
+| `cgr 3` | 读第 3 个会话(混排列表的第 3 个) |
+| `cgr 3 -r` | 读完接着聊(自动用对 `claude` / `codex`) |
 | `cgr export 3 -o 对话.md` | 把第 3 个会话导出成文件 `对话.md` |
 | `cgr stats -b project` | 各项目用量 |
-| `cgr rename 3 新标题` | 给会话改名(`cgr f` 里按 `Ctrl-E` 也行) |
+| `cgr rename 3 新标题` | 给会话改名(`cgr f` 里按 `Ctrl-E` 也行;Codex 的改完它自己也看得见) |
 | `cgr rm 3` | 预览删除(再按 y / n) |
 | `cgr rm 3 -f` | 直接删(不备份) |
+
+> 序号**只在你当前看到的那个列表里有意义**。`cgr 3` 和 `cla 3` 很可能是两个不同的会话 —— 拿不准就用 id 前缀。
