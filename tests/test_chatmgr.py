@@ -78,13 +78,21 @@ class BaseTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
+        self.tmp_root = root
         self.config = root / "config"
         self.archive = root / "archive"
+        self.codex_home = root / "codex"  # 空目录:cgr 默认是"全部源",别去读真实的 ~/.codex
         (self.config / "projects").mkdir(parents=True)
         self.archive.mkdir(parents=True)
-        self._env = {k: os.environ.get(k) for k in ("CLAUDE_CONFIG_DIR", "CHATMGR_ARCHIVE_DIR", "NO_COLOR")}
+        self.codex_home.mkdir(parents=True)
+        self._env = {k: os.environ.get(k) for k in
+                     ("CLAUDE_CONFIG_DIR", "CHATMGR_ARCHIVE_DIR", "NO_COLOR",
+                      "CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN", "CODEX_HOME")}
         os.environ["CLAUDE_CONFIG_DIR"] = str(self.config)
         os.environ["CHATMGR_ARCHIVE_DIR"] = str(self.archive)
+        os.environ["CHATMGR_CODEX_DIR"] = str(self.codex_home)
+        os.environ["CHATMGR_CODEX_BIN"] = ""  # 当作"没装 codex",免得测试真去调它
+        os.environ.pop("CODEX_HOME", None)
         os.environ["NO_COLOR"] = "1"  # 输出里不带颜色码,断言好写
         chatmgr._COLOR_MODE = None
 
@@ -402,12 +410,11 @@ class CodexTest(BaseTest):
 
     def setUp(self):
         super().setUp()
-        root = Path(self.tmp.name)
-        self.codex = root / "codex"
-        (self.codex / "sessions" / "2026" / "10" / "15").mkdir(parents=True)
-        (self.codex / "archived_sessions").mkdir(parents=True)
-        self.calls = root / "calls.log"
-        stub = root / "codex-stub.sh"
+        self.codex = self.codex_home  # 用基类已经建好、且已指向的目录
+        (self.codex / "sessions" / "2026" / "10" / "15").mkdir(parents=True, exist_ok=True)
+        (self.codex / "archived_sessions").mkdir(parents=True, exist_ok=True)
+        self.calls = self.tmp_root / "calls.log"
+        stub = self.tmp_root / "codex-stub.sh"
         stub.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\nexit 0\n', encoding="utf-8")
         stub.chmod(0o755)
         self.stub = stub
@@ -417,8 +424,6 @@ class CodexTest(BaseTest):
         con.execute("create table threads (id text primary key, name text)")
         con.commit()
         con.close()
-        self._env.update({k: os.environ.get(k)
-                          for k in ("CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN", "CODEX_HOME")})
         os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)
         os.environ["CHATMGR_CODEX_BIN"] = str(stub)
 
@@ -450,7 +455,7 @@ class CodexTest(BaseTest):
 
     def sessions(self, archived=False):
         return chatmgr.SessionStore(
-            include_archived=archived, source=chatmgr.SOURCES["codex"]).sessions()
+            include_archived=archived, sources=[chatmgr.SOURCES["codex"]]).sessions()
 
     # ---- 发现 / 归组
 
@@ -622,19 +627,57 @@ class CodexTest(BaseTest):
         os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)  # 我们的变量优先级更高
         self.assertEqual(chatmgr.codex_dir(), self.codex)
 
+    def test_cgr_lists_both_sources_with_source_column(self):
+        """不带 -S 时默认是「全部」(测试里 argv[0] 认不出命令名,也归到全部)。"""
+        self.live("aaaa1111", [user("claude 的会话")])
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="codex 的会话")])
+        code, out = self.run_cli("list")
+        self.assertEqual(code, 0)
+        self.assertIn("2 个会话", out)
+        self.assertIn("Claude", out)
+        self.assertIn("Codex", out)
+        self.assertIn("源", out.splitlines()[0], "混排时必须能看出每行是哪个 agent 的")
+
+    def test_single_source_list_keeps_old_columns(self):
+        """只看一个源时,输出和以前一样 —— 不多出一列「源」。"""
+        self.live("aaaa1111", [user("只有 claude")])
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="codex 的会话")])
+        code, out = self.run_cli("list", "-S", "claude")
+        self.assertEqual(code, 0)
+        self.assertIn("1 个会话", out)
+        self.assertNotIn("源", out.splitlines()[0])
+
+    def test_dash_s_narrows_to_one_source(self):
+        self.live("aaaa1111", [user("claude 的会话")])
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="codex 的会话")])
+        self.assertIn("1 个会话", self.run_cli("list", "-S", "codex")[1])
+        self.assertIn("1 个会话", self.run_cli("list", "-S", "claude")[1])
+
     # ---- 命令名决定默认源
 
-    def test_prog_name_selects_source(self):
+    def test_prog_name_selects_sources(self):
         old = sys.argv[0]
         try:
             sys.argv[0] = "cod"
-            self.assertEqual(chatmgr.default_source_key(), "codex")
+            self.assertEqual(chatmgr.default_source_keys(), ["codex"])
+            sys.argv[0] = "cla"
+            self.assertEqual(chatmgr.default_source_keys(), ["claude"])
             sys.argv[0] = "cgr"
-            self.assertEqual(chatmgr.default_source_key(), "claude")
+            self.assertEqual(chatmgr.default_source_keys(), ["claude", "codex"],
+                             "cgr 是「全部」—— 一次搜遍所有 agent 才是它的初衷")
             sys.argv[0] = "/some/where/chatmgr.py"  # picker 自己调自己时的 argv[0]
-            self.assertEqual(chatmgr.default_source_key(), "claude")
+            self.assertEqual(chatmgr.default_source_keys(), ["claude", "codex"])
         finally:
             sys.argv[0] = old
+
+    def test_dash_s_can_pick_and_combine(self):
+        class A:
+            source = None
+        a = A()
+        a.source = ["claude"]
+        self.assertEqual(chatmgr.selected_source_keys(a), ["claude"])
+        a.source = ["codex,claude", "codex"]  # 逗号 + 重复,去重且保持顺序
+        self.assertEqual(chatmgr.selected_source_keys(a), ["codex", "claude"])
 
 
 if __name__ == "__main__":

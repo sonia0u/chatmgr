@@ -520,16 +520,20 @@ def load_session(path: Path, archived: bool = False) -> Session:
 class SessionStore:
     """发现并缓存会话。include_archived 时把归档也纳入数据源。
 
-    这里的会话全部来自**同一个源**(命令名或 -S 决定),所以排序/序号/去重都在一个源内进行。
+    可以装**多个源**(`cgr` 就是全部混排):发现阶段把各源的会话并到一起,按最后
+    活动时间倒序,再按 `(源, id)` 去重 —— 不同源的 id 空间互不相干,撞车了不能当重复。
     """
 
     def __init__(self, include_archived: bool = False, dedupe: bool = True,
-                 source: Source | None = None):
-        self.source = source or SOURCES["claude"]
+                 sources: list[Source] | None = None):
+        self.sources = list(sources) if sources else [SOURCES["claude"]]
         self.include_archived = include_archived
         self.dedupe = dedupe
         self._cache: list[Session] | None = None
         self.duplicates = 0
+
+    def has(self, key: str) -> bool:
+        return any(s.key == key for s in self.sources)
 
     def sessions(self) -> list[Session]:
         if self._cache is None:
@@ -537,7 +541,9 @@ class SessionStore:
         return self._cache
 
     def _discover(self) -> list[Session]:
-        out = self.source.discover(self.include_archived)
+        out: list[Session] = []
+        for src in self.sources:
+            out.extend(src.discover(self.include_archived))
         out.sort(key=lambda s: (s.end or s.start or dt.datetime.min, not s.archived), reverse=True)
         if not self.dedupe:
             return out
@@ -1207,24 +1213,51 @@ class CodexSource(Source):
 
 
 SOURCES: dict[str, Source] = {s.key: s for s in (ClaudeSource(), CodexSource())}
+ALL_SOURCES = list(SOURCES)
 
-#: 靠"自己被叫什么名字"决定默认源(busybox 那招)。
-#: chatmgr.py 是 run_picker 自己调自己时的 argv[0],必须归到 claude 一族,
-#: 否则 picker 里打开/删除会跳源。
-SOURCE_BY_PROG = {
-    "cgr": "claude",
-    "chatmgr": "claude",
-    "chatmgr.py": "claude",
-    "cod": "codex",
+#: 靠"自己被叫什么名字"决定默认管**哪些**源(busybox 那招)。
+#:   cgr = 全部(这才是工具最初的场景:"我上次在哪聊过 X",不该搜两遍)
+#:   cla / cod = 只看那一个
+#: 以后加新 agent:往这里加一行 + 建个软链即可。
+#: chatmgr.py 是 run_picker 自己调自己时的 argv[0],也归"全部";
+#: picker 会显式把 -S 传下去,所以子进程不会飘。
+SOURCES_BY_PROG = {
+    "cgr": ALL_SOURCES,
+    "chatmgr": ALL_SOURCES,
+    "chatmgr.py": ALL_SOURCES,
+    "cla": ["claude"],
+    "cod": ["codex"],
 }
 
 
-def default_source_key() -> str:
-    return SOURCE_BY_PROG.get(os.path.basename(sys.argv[0]), "claude")
+def default_source_keys() -> list[str]:
+    return list(SOURCES_BY_PROG.get(os.path.basename(sys.argv[0]), ALL_SOURCES))
 
 
-def source_of(args, key: str | None = None) -> Source:
-    return SOURCES[key or getattr(args, "source", None) or default_source_key()]
+def _split_sources(vals) -> list[str]:
+    out: list[str] = []
+    for v in vals or []:
+        out += [x.strip() for x in str(v).split(",") if x.strip()]
+    return out
+
+
+def selected_source_keys(args) -> list[str]:
+    """本次要管哪些源。-S 覆盖命令名的默认,可重复或逗号分隔。去重且保持顺序。"""
+    keys = _split_sources(getattr(args, "source", None)) or default_source_keys()
+    bad = [k for k in keys if k not in SOURCES]
+    if bad:
+        die(f"不认识的数据源:{', '.join(bad)}(可用:" + " / ".join(ALL_SOURCES) + ")")
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            uniq.append(k)
+    return uniq
+
+
+def selected_sources(args) -> list[Source]:
+    return [SOURCES[k] for k in selected_source_keys(args)]
 
 
 def iter_events(s: Session, full: bool = False):
@@ -1237,6 +1270,24 @@ def search_units(s: Session, include_all: bool = False, role: str | None = None)
 
 def _src(s: Session) -> Source:
     return SOURCES[s.source]
+
+
+#: 来源在列表里的颜色(和 show 里的 [Claude] / [Codex] 标签呼应)
+SOURCE_COLORS = {"claude": "1;34", "codex": "1;35"}
+
+
+def source_tag(s: Session, on: bool) -> str:
+    """多源混排时给每行标出来源 —— 否则看不出这行是哪个 agent 的。"""
+    return paint(_src(s).label, SOURCE_COLORS.get(s.source, "1;36"), on)
+
+
+def mixed(sessions) -> bool:
+    """列出来的会话真的横跨多个源,才值得加"源"那一列。
+
+    按**内容**而不是按选中的源判断:只装了 Claude 的人跑 `cgr list` 不该平白多一列
+    "Claude"。单源时输出和以前逐字节一致。
+    """
+    return len({s.source for s in sessions}) > 1
 
 
 # ---------------------------------------------------------------- 归档层
@@ -1454,20 +1505,24 @@ def cmd_list(args, store: SessionStore):
     idx = store.index_map()
     on = color_enabled()
     pcolors = project_colors(store.sessions())
-    rows = [["#", "时间", "项目", "标题", "消息", "大小", "tok"]]
+    multi = mixed(sessions)  # 混排时才加"源"列;单源输出保持和以前逐字节一致
+    rows = [["#", "时间"] + (["源"] if multi else []) + ["项目", "标题", "消息", "大小", "tok"]]
     for s in sessions:
         title = s.title + ("  [已归档]" if s.archived else "")
-        rows.append(
-            [
-                paint(str(idx.get(str(s.path), "?")), "1;33", on),  # 序号高亮,便于复制去 show/rm
-                fmt_time(s.end or s.start),
-                paint(truncate(s.short_project, 22), pcolors.get(s.short_project, "36"), on),
-                truncate(title, 34),
-                f"{s.prompts}+{s.replies}",
-                human_size(s.size),
-                human_tokens(s.tok_io) if s.has_usage else "—",
-            ]
-        )
+        row = [
+            paint(str(idx.get(str(s.path), "?")), "1;33", on),  # 序号高亮,便于复制去 show/rm
+            fmt_time(s.end or s.start),
+        ]
+        if multi:
+            row.append(source_tag(s, on))
+        row += [
+            paint(truncate(s.short_project, 22), pcolors.get(s.short_project, "36"), on),
+            truncate(title, 34),
+            f"{s.prompts}+{s.replies}",
+            human_size(s.size),
+            human_tokens(s.tok_io) if s.has_usage else "—",
+        ]
+        rows.append(row)
     print_table(rows, shutil.get_terminal_size((120, 24)).columns)
     print(f"\n{len(sessions)} 个会话   (tok = input+output)")
     if store.duplicates:
@@ -1484,9 +1539,9 @@ def cmd_prompts(args, store: SessionStore):
     和 search 的分工:search 搜「会话内容」(含 Claude 回复、工具调用);prompts 只看
     「我问过什么」—— 数据源独立,所以 jsonl 已被删的会话,它的提问仍在这里能翻到。
     """
-    if store.source.key != "claude":
-        print(f"{store.source.label} 没有「提问流水」这种东西 —— 标题看它的标题索引,"
-              f"完整提问用 {prog_name()} list / {prog_name()} search。")
+    if not store.has("claude"):
+        print(f"{' / '.join(s.label for s in store.sources)} 没有「提问流水」这种东西 —— "
+              f"标题看它的标题索引,完整提问用 {prog_name()} list / {prog_name()} search。")
         return
     if not history_file().is_file():
         die(f"找不到 {history_file()}(还没有提问流水)")
@@ -1532,17 +1587,14 @@ def cmd_prompts(args, store: SessionStore):
     print(f"\n{len(prompts)} 条提问")
 
 
-def kind_labels(src: "Source") -> dict:
-    """命中来源的显示名。assistant 用源自己的名字 —— 在 cod 里把 Codex 的回复标成
-    "Claude" 是错的。"""
-    d = dict(KIND_LABEL)
-    d["assistant"] = src.label
-    return d
+def kind_label(kind: str, src: Source) -> str:
+    """命中来源的显示名。assistant 用**那个会话自己的**源名 —— 在 cod 里把 Codex 的
+    回复标成 "Claude" 是错的;cgr 混排时更是每行都得看它属于哪个源。"""
+    return src.label if kind == "assistant" else KIND_LABEL.get(kind, kind)
 
 
 def cmd_search(args, store: SessionStore):
     sessions = apply_filters(store.sessions(), args)
-    labels = kind_labels(store.source)
     if args.limit:
         sessions = sessions[: args.limit]
     flags = re.IGNORECASE if args.ignore_case else 0
@@ -1628,16 +1680,19 @@ def cmd_search(args, store: SessionStore):
     def sidx(s: Session) -> str:
         return idx.get(str(s.path), "?")
 
+    mixed_hits = mixed([s for s in title_hits] + [s for s, _, _ in content_hits])
+
     def meta(s: Session) -> str:
         tag = " [已归档]" if s.archived else ""
+        prefix = f"{_src(s).label} · " if mixed_hits else ""
         return paint(
-            f"{s.short_project} · {fmt_time(s.end or s.start)} · {s.prompts} 问 / {s.replies} 答{tag}",
+            f"{prefix}{s.short_project} · {fmt_time(s.end or s.start)} · {s.prompts} 问 / {s.replies} 答{tag}",
             pcolors.get(s.short_project, "36"), on)
 
     if args.grep:  # 平铺:每行带标题,一眼看出是哪次对话里的
         for s, _, sn in content_hits:
             for kind, text in sn:
-                print(f"{_highlight(s.title, pat, on)} › {labels.get(kind, kind)}: {text}")
+                print(f"{_highlight(s.title, pat, on)} › {kind_label(kind, _src(s))}: {text}")
         if title_hits:
             print(paint(f"— 另有 {len(title_hits)} 个会话是【标题】命中 —", "2", on))
         total = sum(c for _, c, _ in content_hits)
@@ -1658,7 +1713,7 @@ def cmd_search(args, store: SessionStore):
             print(f"  [{sidx(s)}] {_highlight(s.title, pat, on)}  ({c} 处)")  # 标明是哪次对话里的内容
             print(f"      {meta(s)}")
             for kind, text in sn:
-                print(f"      {paint(labels.get(kind, kind), '2', on)}: {text}")
+                print(f"      {paint(kind_label(kind, _src(s)), '2', on)}: {text}")
             if c > len(sn):
                 print(paint(f"      … 另有 {c - len(sn)} 处。全看:{all_cmd}", "2", on))
             print(paint(f"      → 打开 {prog_name()} {sidx(s)} · 续聊 {prog_name()} {sidx(s)} -r", "2", on))
@@ -1740,12 +1795,14 @@ def session_lines(store: SessionStore, sessions: list[Session]) -> list[str]:
     idx = store.index_map()
     on = color_enabled()
     pcolors = project_colors(store.sessions())
+    multi = mixed(sessions)
     lines = []
     for s in sessions:
         tag = " [已归档]" if s.archived else ""
+        head = (f"{_src(s).label} " if multi else "") + s.title + tag
         display = "  ".join(
             [
-                pad(truncate(s.title + tag, 32), 32),  # 标题放最前,最能认出是哪次对话
+                pad(truncate(head, 32), 32),  # 标题放最前,最能认出是哪次对话
                 paint(pad(truncate(s.short_project, 18), 18), pcolors.get(s.short_project, "36"), on),
                 paint(f"{s.prompts}+{s.replies}", "2", on),
                 paint(fmt_time(s.end or s.start), "2", on),  # 时间往后放
@@ -1763,8 +1820,8 @@ def cmd_picklines(args, store: SessionStore):
 def _filter_args(args) -> list[str]:
     """把当前的筛选选项拼回命令行,供 pick 的 reload 复用。"""
     out: list[str] = []
-    if getattr(args, "source", None):  # 带上源,否则 reload 会跳回默认源
-        out += ["-S", args.source]
+    for k in getattr(args, "source", None) or []:  # 带上源,否则 reload 会跳回默认源
+        out += ["-S", k]
     for p in getattr(args, "project", None) or []:
         out += ["-p", p]
     if getattr(args, "since", None):
@@ -1793,7 +1850,7 @@ def run_picker(store: SessionStore, sessions: list[Session], prefill: str = "",
     exe, script = sys.executable, os.path.abspath(__file__)
     # 委托给自己起的新进程:必须带上源,否则它按 argv[0](chatmgr.py)回到默认源,
     # 序号会张冠李戴 —— 打开/删除的可能是另一个源的会话。
-    sflag = ["-S", store.source.key]
+    sflag = [x for src in store.sources for x in ("-S", src.key)]
     extra = [*sflag] + (["-a"] if archived else [])  # -a 也要带,否则序号对不上
     sq = " ".join(shlex.quote(x) for x in sflag)
     selfq = f"{shlex.quote(exe)} {shlex.quote(script)}"
@@ -2003,7 +2060,7 @@ def cmd_rm(args, store: SessionStore):
 
 
 def cmd_purge(args, store: SessionStore):
-    if store.source.key == "codex":
+    if not store.has("claude"):
         print("Codex 的归档由它自己管(codex archive / delete),这里没有本工具存的备份可清。")
         print("要取回已归档的会话:codex unarchive <id>")
         return
@@ -2083,12 +2140,13 @@ def cmd_purge(args, store: SessionStore):
 
 def cmd_dedupe(args, store: SessionStore):
     """同一会话 id 有多个副本时,保留最新一份,其余移入归档(不删除)。"""
-    if store.source.key == "codex":
+    if not store.has("claude"):
         # 不是"不支持",是没这回事:Codex 一个会话横跨多个文件时,发现阶段已按
         # session_id 归成一个会话,不存在重复副本。
         print("Codex 无需去重:发现时已按 session_id 归组,同一会话不会出现两份。")
         return
-    alls = SessionStore(include_archived=args.archived, dedupe=False, source=store.source).sessions()
+    alls = SessionStore(include_archived=args.archived, dedupe=False,
+                        sources=[SOURCES["claude"]]).sessions()
     groups: dict[str, list[Session]] = defaultdict(list)
     for s in alls:
         groups[s.sid].append(s)
@@ -2175,8 +2233,8 @@ def _common_parser() -> argparse.ArgumentParser:
     common.add_argument("-l", "--limit", type=int, metavar="N", help="最多处理 N 个会话")
     common.add_argument("-j", "--json", action="store_true", help="机器可读输出")
     common.add_argument("-a", "--archived", action="store_true", help="把归档也纳入数据源")
-    common.add_argument("-S", "--source", choices=sorted(SOURCES), metavar="SRC",
-                        help="选数据源(" + " / ".join(sorted(SOURCES)) + ");默认看命令名")
+    common.add_argument("-S", "--source", action="append", metavar="SRC",
+                        help="选数据源,可重复或逗号分隔(" + " / ".join(ALL_SOURCES) + ");默认看命令名")
     common.add_argument("--color", dest="color", action="store_true", default=None, help="强制彩色输出")
     common.add_argument("--no-color", dest="color", action="store_false", help="关闭彩色输出")
     return common
@@ -2266,7 +2324,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _make_store(args) -> SessionStore:
-    return SessionStore(include_archived=getattr(args, "archived", False), source=source_of(args))
+    return SessionStore(include_archived=getattr(args, "archived", False),
+                        sources=selected_sources(args))
 
 
 def main(argv=None):
@@ -2275,9 +2334,9 @@ def main(argv=None):
     if raw and raw[0] == "_picklines":  # 内部用:pick 的 reload,不进 <命令> 帮助
         args = _common_parser().parse_args(raw[1:])
         _COLOR_MODE = getattr(args, "color", None)
-        src = source_of(args)
-        if not src.root().is_dir():
-            die(src.missing_hint())
+        srcs = selected_sources(args)
+        if not any(s.root().is_dir() for s in srcs):
+            die(" / ".join(s.missing_hint() for s in srcs))
         cmd_picklines(args, _make_store(args))
         return
     # 分派:空→list;选项开头→list;纯数字→show;其他词→search;已知命令/别名→原样
@@ -2297,10 +2356,11 @@ def main(argv=None):
 
     args = build_parser().parse_args(raw)
     _COLOR_MODE = getattr(args, "color", None)  # --color / --no-color 覆盖自动判断
-    src = source_of(args)
-    # purge 对 Codex 是空操作(它自己的归档自己管),不要求数据源目录存在
-    if not src.root().is_dir() and args.func is not cmd_purge:
-        die(src.missing_hint())
+    srcs = selected_sources(args)
+    # 只要有一个选中的源有数据就继续(缺的那个自然是空的);一个都没有才报错。
+    # purge 对 Codex 是空操作,不要求数据目录存在。
+    if args.func is not cmd_purge and not any(s.root().is_dir() for s in srcs):
+        die(" / ".join(s.missing_hint() for s in srcs))
     store = _make_store(args)
     try:
         args.func(args, store)
