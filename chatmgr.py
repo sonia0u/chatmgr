@@ -3,15 +3,17 @@
 
 把本机 agent 的聊天记录"用起来":搜索 / 阅读 / 统计 / 安全删除。
 
-数据源(命令名决定默认用哪个;`-S/--source` 可覆盖):
-  claude  ~/.claude/projects/<项目>/<会话id>.jsonl        cgr / chatmgr
-  codex   ~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl  cod
+命令名决定默认看哪些源(`SOURCES_BY_PROG`;`-S/--source` 可覆盖):
+  cgr / chatmgr  全部,Claude + Codex 混排
+  cla            只看 Claude    ~/.claude/projects/<项目>/<会话id>.jsonl
+  cod            只看 Codex     ~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl
 
 分三层:
-  解析层  Source / SessionStore / Session —— 无 CLI 依赖,可复用(将来可接 MCP)
-  归档层  Claude 用自己的 backup/purge + manifest;
-          Codex 用它自带的 codex archive / delete(所以不另存一份)
-  CLI 层  argparse 子命令 + resolve()
+  数据源层  Source / ClaudeSource / CodexSource —— 发现文件、产出事件流、以及写操作
+  解析层    SessionStore / Session —— 无 CLI 依赖,可复用(将来可接 MCP)
+  归档层    Claude 用自己的 backup/purge + manifest;
+            Codex 用它自带的 codex archive / delete(所以不另存一份)
+  CLI 层    argparse 子命令 + resolve()
 
 仅用标准库。
 """
@@ -2240,12 +2242,33 @@ def _common_parser() -> argparse.ArgumentParser:
     return common
 
 
+def _prog_epilog(prog: str) -> str:
+    """顶层帮助里那段"哪个命令名管哪些源"。
+
+    从 `SOURCES_BY_PROG` 反推,不手写 —— 以后加新 agent(建张软链 + 加一行)时帮助
+    自动跟着变,不会漏。`chatmgr.py` 是内部自调用用的名字,不进帮助。
+    """
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for name, keys in SOURCES_BY_PROG.items():
+        if name == "chatmgr.py":
+            continue
+        groups.setdefault(tuple(keys), []).append(name)
+    lines = ["入口(同一个文件,建这几个软链;靠命令名决定默认看哪些源):"]
+    for keys, names in sorted(groups.items(), key=lambda kv: -len(kv[0])):
+        label = " / ".join(SOURCES[k].label for k in keys) + ("(全部)" if len(keys) > 1 else "")
+        lines.append(f"  {' / '.join(sorted(names)):<14} {label}")
+    lines += ["", f"也可以不换命令名,用 -S 收窄(可逗号分隔):  {prog} list -S claude"]
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = _common_parser()
     prog = prog_name()
     p = argparse.ArgumentParser(
         prog=prog,
         description=f"聊天记录管理。不带子命令=列表;{prog} 3=打开第3个;{prog} 关键词=搜索。",
+        epilog=_prog_epilog(prog),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="cmd", metavar="<命令/数字/关键词>")
 
@@ -2315,7 +2338,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_dedupe)
 
     sp = sub.add_parser("rename", aliases=SUBCOMMANDS["rename"], parents=[common],
-                        help="给会话改名(写入 custom-title)")
+                        help="给会话改名(写回原处:Claude 写 jsonl,Codex 写状态库)")
     sp.add_argument("ref", help="id 前缀 / 列表序号 / 标题")
     sp.add_argument("title", nargs="*", help="新标题;不给则交互式问(pick 里 Ctrl-E 用的就是这个)")
     sp.set_defaults(func=cmd_rename)

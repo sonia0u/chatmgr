@@ -653,6 +653,15 @@ class CodexTest(BaseTest):
         self.assertIn("1 个会话", self.run_cli("list", "-S", "codex")[1])
         self.assertIn("1 个会话", self.run_cli("list", "-S", "claude")[1])
 
+    def test_help_lists_the_entry_points(self):
+        """`-h` 里必须能看到 cla / cod —— 否则没人知道它们存在。清单是从
+        SOURCES_BY_PROG 反推的,以后加新 agent 会自动出现。"""
+        out = chatmgr.build_parser().format_help()
+        self.assertIn("cla", out)
+        self.assertIn("cod", out)
+        self.assertIn("Claude", out)
+        self.assertIn("-S", out)
+
     # ---- 命令名决定默认源
 
     def test_prog_name_selects_sources(self):
