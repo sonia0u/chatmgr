@@ -26,18 +26,19 @@ class Source:
 
 ## 二、命令形态
 
-同一个 `chatmgr.py`,不同软链 → 不同默认源(busybox 那招,`SOURCE_BY_PROG`):
+同一个 `chatmgr.py`,不同软链 → 默认管哪些源不同(busybox 那招,`SOURCES_BY_PROG`):
 
 ```
-cgr list            # Claude(也接受 chatmgr)
-cod list            # Codex
-cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/since)
+cgr list              # 全部(Claude + Codex 混排;也接受 chatmgr)
+cla list              # 只看 Claude
+cod list              # 只看 Codex
+cgr list -S claude    # 不换命令名,用 -S 收窄(可逗号分隔 / 重复)
 ```
 
 **必须处理的坑:`run_picker` 是"自己调自己"**(`sys.executable` + `chatmgr.py` 绝对路径)。那条路径下 `argv[0]` 是 `chatmgr.py` 而不是 `cgr`,所以:
 
-1. `chatmgr` / `chatmgr.py` 必须归到 claude 一族
-2. 自调用时**显式把 `-S` 传下去**(预览、`show`、`rm`、`rename`、`_picklines` 的 reload 全都要带),否则 picker 里打开/删除会跳源、张冠李戴
+1. `chatmgr` / `chatmgr.py` 明确列进 `SOURCES_BY_PROG`(归到"全部"一族)
+2. 自调用时**把当时选中的源逐个用 `-S` 传下去**(预览、`show`、`rm`、`rename`、`_picklines` 的 reload 全都要带),否则 picker 里打开/删除会跳源、张冠李戴
 
 ## 三、接入一个新源必须回答的问题
 
@@ -56,7 +57,8 @@ cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/sin
 
 ## 四、多源之后要重新定义的产品语义
 
-- **序号的基准**:`cgr 3` 指当前**源内**无筛选列表的第 3 个。一个 store 只装一个源(命令名或 `-S` 决定),所以不存在跨源合并编号的问题 —— **跨源入口是下一轮的事**(见 `prd.md`)。
+- **序号的基准**:`cgr 3` 指**当前命令看到的那个列表**的第 3 个 —— `cgr` 是混排列表,`cla`/`cod` 是单源列表。`SessionStore` 可以装多个源(并集 → 按时间倒序 → 按 `(source, sid)` 去重),命令层对源一无所知,靠每个 `Session` 自己带的 `source` 分派。
+- **混排时才标来源**:`list` 的「源」列、`pick` 的行首、`search` 的 meta 前缀,都只在**列出来的会话真的横跨多源**时出现(按内容判断)。单源输出因此与从前逐字节一致。
 - **`show --resume`**:按源查表,`resume_argv()` 返回 `None` 就提示而不崩(Codex 命令可能找不到)。
 - **`rm` / 归档**:Claude 走 `backup_session` + manifest;Codex 委托 `codex archive`/`delete`。**两套并存,互不干扰**;`cod purge` 是空操作。
 - **`rename`**:Claude 追加 `custom-title`;Codex 追加 `thread_name` 到索引。
@@ -123,6 +125,5 @@ cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/sin
 - **续聊没实跑过**:`codex resume <id>` 命令确认存在、按 id 调用不会歧义,但它一跑就会接管终端开 TUI,没在真实会话上试过。风险低(纯按 id),但如实记一笔。
 - **写状态库有被覆盖的可能**:Codex 应用正开着,它可能在内存里缓存着会话元数据、下次更新时把我们改的 `name` 覆盖回去。实测改名后立刻用 `codex archive <新名字>` 是认的,但**长期会不会被冲掉没有验证**。真被冲掉的话,退路是改成"我们自己的覆盖层"(`~/.local/share/cgr/codex-titles.json`,绝不碰 Codex 数据,代价是只有 `cod` 看得到新名字)。
 - **`state_<N>.sqlite` 的版本号会涨**(现在是 `state_5`)。代码按"取最大的 N"来找,不受影响;但 schema 若是大变,得重新勘查。
-- **跨源入口**(`cgr` 变成"全部")是下一轮的事,见 `prd.md`。
-- **OpenCode 等更多源**:见第五节,会话正文存哪仍未知。
+- **OpenCode 等更多源**:见第五节,会话正文存哪仍未知。接入清单见第三节。
 - **Codex 的 `prompts`**:索引里有已删会话的标题,但没有完整提问流水,形态和 Claude 的 `history.jsonl` 不同,要单独设计。

@@ -5,8 +5,9 @@
 ## 安装 / 运行
 
 ```bash
-cgr <命令>                          # ~/.local/bin/cgr 已软链到仓库内 chatmgr.py
-cod <命令>                          # 同一份代码,默认源换成 Codex
+cgr <命令>                          # ~/.local/bin/cgr 已软链到仓库内 chatmgr.py;cgr = 全部源混排
+cla <命令>                          # 只看 Claude Code
+cod <命令>                          # 只看 Codex
 python3 /Users/sonia/01_AI/001_code/tools/ChatManager/chatmgr.py <命令>   # 或直接跑
 cgr -h                              # 顶层帮助
 cgr <命令> -h                        # 某子命令的全部参数
@@ -14,16 +15,18 @@ cgr <命令> -h                        # 某子命令的全部参数
 
 `cgr` 和 `chatmgr` 是同一个文件,两个名字都能用。
 
-## 两个数据源(cgr / cod)
+## 三个命令:看全部 / 只看某一个
 
-| 命令 | 源 | 记录在哪 |
+| 命令 | 看到哪些 | 记录在哪 |
 |---|---|---|
-| `cgr`(=`chatmgr`) | Claude Code | `~/.claude/projects/<项目>/<会话id>.jsonl` |
-| `cod` | Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` |
+| `cgr`(=`chatmgr`) | **全部**,Claude 和 Codex 按时间混排 | 下面两处都读 |
+| `cla` | 只看 Claude Code | `~/.claude/projects/<项目>/<会话id>.jsonl` |
+| `cod` | 只看 Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` |
 
-- **两个命令的子命令、参数、指认方式完全一样**。本文档里所有的 `cgr xxx` 都适用于 `cod xxx`(把 `cgr` 换成 `cod`)。
-- 不想换命令名,也可以用 `-S` 临时换源:`cgr list -S codex`、`cod list -S claude`。
-- 序号、筛选、搜索都**只在当前源内**,两个源互不干扰。
+- **三个命令的子命令、参数、指认方式完全一样**。本文档里所有的 `cgr xxx` 都适用于 `cla xxx` / `cod xxx`。
+- 不想换命令名,也可以用 `-S` 收窄:`cgr list -S codex`、`cgr list -S claude`(可逗号分隔:`-S claude,codex`)。
+- **序号只在你当前看到的那个列表里有意义**:`cgr 3` 是混排列表的第 3 条(可能是 Codex 的),`cla 3` 是 Claude 列表的第 3 条。
+- **混排时列表会多一列「源」**,一眼看出每行是哪个 agent 的;只看单源时没有这一列(和以前长得一样)。
 
 **两边行为不同的地方:**
 
@@ -36,7 +39,7 @@ cgr <命令> -h                        # 某子命令的全部参数
 | `dedupe` | 有用(同 id 可能多份) | 无需处理(已按 `session_id` 归组) |
 | token 列 | 一直有 | 旧版 Codex 不记 token,这类会话显示 `—` |
 
-Codex 的**删除 / 改名 / 续聊需要一个 `codex` 命令**(本机藏在 ChatGPT.app 包里,不在 PATH)。找不到时**只读功能照常能用**,写操作会明确提示。
+Codex 的**删除 / 改名 / 续聊需要一个 `codex` 命令**(可能装在 PATH 上,也可能藏在 ChatGPT.app 包里)。找不到时**只读功能照常能用**,写操作会明确提示。
 
 ## 怎么读这份文档
 

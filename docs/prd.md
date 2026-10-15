@@ -65,7 +65,7 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 - **v1 范围**:`list / search / show / pick / export / stats / rm / purge`,后续加入 `dedupe` / `rename` / `prompts`,共用同一解析层。
 - **命令行要好敲(合用顺手)**:命令名 `cgr`;裸参数分派(`cgr 3` = 打开、`cgr 关键词` = 搜索、不带参数 = 列表);别名只留 `pick`→`f`(其余命令敲全名);`pick` 用 fzf 一步挑;`list` 序号高亮、`search` 命中高亮;`show` 读完可一键续聊。
 
-- **多数据源 = 一个工具多个马甲**(2026-10-15 实现):同一个 `chatmgr.py`,靠"自己被叫什么名字"决定默认源 —— `cgr` / `chatmgr` 管 Claude,`cod` 管 Codex;`-S/--source` 可覆盖。**两个命令的子命令、参数、指认方式完全一致**,只是数据源不同。不换工具、不学新语法。
+- **多数据源 = 一个工具多个马甲**(2026-10-15 实现):同一个 `chatmgr.py`,靠"自己被叫什么名字"决定默认管哪些源 —— **`cgr` / `chatmgr` 看全部混排**(这才是工具最初的场景"我上次在哪聊过 X",不该搜两遍),`cla` 只看 Claude,`cod` 只看 Codex;`-S/--source` 可覆盖(可重复或逗号分隔)。**三个命令的子命令、参数、指认方式完全一致**,只是默认看到的东西不同。混排时列表多一列「源」,否则看不出每行是哪个 agent 的;只列单源时不加(输出与从前逐字节一致)。
 - **Codex 的删除 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:它的 CLI(藏在 ChatGPT.app 包里)自带 `archive` / `delete` / `resume`。所以 `cod rm` 的"删并备份"= `codex archive`(挪进它自己的归档,`cod list -a` 看得到,`codex unarchive` 可取回),`~/claude-archive` 那一套**完全不参与 Codex**。
 - **Codex 侧不写启发式噪音过滤器**:它的 `item_completed` 记录本身就是干净的语义骨架(提问 / 回复 / 执行的命令 / 改了哪些文件),注入的脚手架不在里面。相比靠文本前缀猜 `response_item`,这是数量级上的差别(6106 条里真提问只有 342 条)。
 - **改名要写到 Codex 真正读的地方**:它的标题真身是状态库 `state_<N>.sqlite` 的 `threads.name`,不是 `session_index.jsonl`(实测:拿后者里的名字去 `codex archive <名字>` 找不到会话,拿前者就能找到)。所以 `cod rename` 改状态库,顺带补一条 jsonl 镜像;**刻意不动 `updated_at`**,免得把会话顶到侧边栏最前面。
@@ -81,6 +81,5 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 
 - **MCP**:让 Claude 自己能查询本机历史。解析层已解耦,v2 只需薄薄一层调用。v1 不做。
 - 索引层(SQLite FTS5),仅当会话量增长到即时扫描变慢时再上。
-- **跨源入口**:让 `cgr` 从"Claude 专用"变成"全部源"(再加一个 `cla` 管单个 Claude)。会改掉最常用命令的观感,所以单独一轮做、单独验。**多数据源本身已实现**(见「已确认的产品决策」)。
 - **OpenCode 等更多源**:会话正文存哪**完全未知**,得实际用过再勘查。接入清单见 `docs/sources.md`。
 - **Codex 的 `prompts`**:索引里有已删会话的标题,但没有完整提问流水,形态和 Claude 的 `history.jsonl` 不同,要单独设计。

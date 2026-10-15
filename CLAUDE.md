@@ -4,14 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-聊天记录管理 CLI,纯 Python 标准库、单文件、无依赖、无构建步骤。管两个数据源:
+聊天记录管理 CLI,纯 Python 标准库、单文件、无依赖、无构建步骤。
 
-| 命令 | 源 | 数据 |
+| 命令 | 管哪些源 | 数据 |
 |---|---|---|
-| `cgr` / `chatmgr` | Claude Code | `~/.claude/projects/*/*.jsonl` |
-| `cod` | Codex | `~/.codex/sessions/**/*.jsonl` |
+| `cgr`(=`chatmgr`) | **全部**,混排 | Claude + Codex |
+| `cla` | 只看 Claude Code | `~/.claude/projects/*/*.jsonl` |
+| `cod` | 只看 Codex | `~/.codex/sessions/**/*.jsonl` |
 
-两个命令是**同一个文件的不同软链** —— 靠"自己被叫什么名字"决定默认源(`SOURCE_BY_PROG`),`-S/--source` 可覆盖。子命令、筛选、指认方式完全一致。
+三个名字是**同一个文件的不同软链** —— 靠"自己被叫什么名字"决定默认管哪些源(`SOURCES_BY_PROG`),`-S/--source` 可覆盖(可重复或逗号分隔,如 `-S claude,codex`)。子命令、筛选、指认方式完全一致;序号的基准是**当前命令看到的那个列表**。
+以后加新 agent:补一个 `Source` 实现 + 在 `SOURCES_BY_PROG` 加一行 + 建个软链。
 
 ## 标准文件路径
 
@@ -30,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 路径 | 说明 |
 |---|---|
-| `~/.local/bin/cgr`(及 `chatmgr`、`cod`) | 软链 → 仓库内 `chatmgr.py`,让命令可从任意目录运行;调用名决定默认源 |
+| `~/.local/bin/cgr`(及 `chatmgr`、`cla`、`cod`) | 软链 → 仓库内 `chatmgr.py`,让命令可从任意目录运行;调用名决定默认管哪些源 |
 | `~/.claude/projects/<项目>/<会话id>.jsonl` | **Claude 数据源(只读)**;子 agent 在 `<会话id>/subagents/` |
 | `~/.claude/history.jsonl` | 用户的 prompt 流水(每条 prompt 一行);**`prompts` 子命令读取**,数据源与会话 jsonl 独立 |
 | `~/.claude/settings.json` | 环境配置,含 `cleanupPeriodDays`;**不属于本仓库** |
@@ -47,11 +49,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```bash
-cgr <命令>                          # ~/.local/bin/cgr 已软链到本文件
-cod <命令>                          # 同一份代码,默认源换成 Codex
-python3 chatmgr.py <命令>           # 或直接跑(不带 -S 时默认走 claude)
+cgr <命令>                          # ~/.local/bin/cgr 已软链到本文件;cgr = 全部源混排
+cla <命令>                          # 只看 Claude Code
+cod <命令>                          # 只看 Codex
+python3 chatmgr.py <命令>           # 或直接跑(argv[0] 是 chatmgr.py,也当"全部")
 cgr                                 # 不带子命令=list;cgr 3=show 3;cgr 关键词=search
-cgr list -S codex                   # 也可以不换命令名,用 -S 临时换源
+cgr list -S codex                   # 也可以不换命令名,用 -S 临时收窄(可逗号分隔)
 python3 -m py_compile chatmgr.py    # 语法检查
 python3 tests/test_chatmgr.py        # 跑测试(标准库 unittest)
 cgr <命令> -h                        # 看某子命令的全部参数
@@ -83,6 +86,8 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 
 `CLAUDE_CONFIG_DIR` 决定 `~/.claude` 的位置,`CHATMGR_ARCHIVE_DIR` 决定归档目录,`CHATMGR_CODEX_DIR` 决定 `~/.codex` 的位置。
 
+**`cgr` 默认是"全部源",所以任何测试都必须同时把 Codex 目录也指到临时目录** —— 否则 `list` 会去读你真实的 `~/.codex`。`tests/` 里 `BaseTest.setUp` 已经这么做(而且把 `CHATMGR_CODEX_BIN` 置空,免得测试真去调 codex)。
+
 ## 架构
 
 单文件,但分层,**上层依赖下层,解析层不依赖 CLI**(便于将来抽成模块或接 MCP):
@@ -92,7 +97,7 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 3. **归档层** —— Claude 走 `backup_session` / `load_manifest` / `save_manifest`(原样复制 jsonl + manifest);**Codex 不经过这层**,它调自己自带的 `codex archive` / `delete`。
 4. **CLI 层** —— `build_parser` / `cmd_*` / `resolve` / `source_of`。
 
-数据流:`SessionStore.sessions()` 委托 `self.source.discover()`,再按最后活动时间倒序、按 `(source, sid)` 去重。Claude 侧扫 `projects_dir()/*/*.jsonl`(**只扫顶层,不含 `<会话>/subagents/`**);Codex 侧扫 `~/.codex/sessions/**/*.jsonl`,**按 `session_id` 把多文件归成一个会话**。一个 store 只装一个源(命令名或 `-S` 决定)。
+数据流:`SessionStore.sessions()` 把**每个选中源**的 `discover()` 结果并到一起,按最后活动时间倒序,再按 `(source, sid)` 去重 —— `cgr` 就是多源混排,`cla`/`cod` 只有一个。Claude 侧扫 `projects_dir()/*/*.jsonl`(**只扫顶层,不含 `<会话>/subagents/`**);Codex 侧扫 `~/.codex/sessions/**/*.jsonl`,**按 `session_id` 把多文件归成一个会话**。
 
 `iter_events()` / `search_units()` 是**另两条独立的读取路径**,按原始顺序流式产出内容,供 `show` / `search` / `export` 使用(不复用 `load_session` 的聚合结果);它们按 `s.source` 分派到对应源。
 
@@ -132,7 +137,8 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
 - 子命令别名只保留 `pick`→`f`(常用),其余一律敲全名 —— 集中在模块常量 `SUBCOMMANDS`(其余命令的别名列表为空),`KNOWN_COMMANDS` 供裸参数分派判断。要增删别名改这一处即可。注意别名删掉后,`cgr ls` 这类词会被当成**搜索**(非命令词都走 search)。
-- 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived) `-S`(source,取值 `claude`/`codex`;用**大写 S** 避开 `-s`)。默认源由**调用名**决定(`SOURCE_BY_PROG`:`cgr`/`chatmgr`/`chatmgr.py` → claude,`cod` → codex),认不出的名字也回落到 claude。
+- 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived) `-S`(source,可重复或逗号分隔,取值 `claude` / `codex`;用**大写 S** 避开 `-s`)。默认管哪些源由**调用名**决定(`SOURCES_BY_PROG`:`cgr`/`chatmgr`/`chatmgr.py` → 全部,`cla` → claude,`cod` → codex),认不出的名字也回落到"全部"。
+- **混排时才显示来源**:`list` 的「源」列、`pick` 的行首、`search` 的 meta 前缀,都只在**当前列出的会话真的横跨多个源**时出现(按内容判断,不按选了哪些源)。所以只装了 Claude 的人跑 `cgr list` 不会平白多一列;单源输出与以前逐字节一致。
 - `rm` 的 `refs` 可为空:此时按 `-p` 的筛选批量删;`refs` 与 `-p` 都不给则报错 —— 绝不误删全部。
 - `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。搜索**同时搜标题**(标题不在 `search_units()` 里,得单独对 `s.title` 匹配);结果分**【标题命中】/【内容命中】**两组,内容命中标明所属标题。每个会话默认只展开 `--max-hits`(默认 5)处,`--max-hits 0` 或 `--grep` = 不限。`--grep` 每行前缀标题;`--pick` 把命中的会话送进 `run_picker()`;`--json` 为 `{query, title_matches, content_matches}`;命中来源标签经 `KIND_LABEL` 映射成中文(`user`→你、`assistant`→Claude、`tool`→工具、`thinking`→思考、`tool_result`→工具返回),`--json` 里仍是原始 kind。
 - `list` 的序号列高亮(便于直接拿来 `cgr 3`)。
