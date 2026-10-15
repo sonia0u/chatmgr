@@ -27,6 +27,7 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 |---|---|
 | `list` | 列出会话:序号 / 时间 / 项目 / 标题 / 消息数 / 大小 / token。不带子命令时默认走它 |
 | `search <query>` | 跨会话搜索内容,默认按会话分组 |
+| `prompts [query]` | 列出/搜索你自己的提问流水(`~/.claude/history.jsonl`),含 jsonl 已删的会话 |
 | `show <ref>` | 阅读一个会话,可 `--resume` 直接续聊 |
 | `pick` | fzf 交互选择:Enter 打开 / Ctrl-R 续聊 / Ctrl-D 预览删除 |
 | `export <ref>` | 导出 md / txt / json |
@@ -54,11 +55,12 @@ Claude Code 把每次对话完整存成 `~/.claude/projects/<项目>/<会话id>.
 - **不做成本估算。** 用户走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱",算了是假数字。只报 token。
 - **搜索默认范围**:user 输入 + assistant 正文 + 工具调用(名字/参数);工具返回和 thinking 属噪音,`--all` 才纳入。
 - **搜索默认忽略大小写**,`-c` 才区分;`--grep` 平铺输出(默认按会话分组)。
+- **`prompts` 读提问流水,与 `search` 分工**:数据源是 `~/.claude/history.jsonl`(每条 prompt 一行),独立于会话 jsonl —— 所以**jsonl 已删的会话,其提问仍可搜到**(实测有 34 段已删会话仅存于流水)。search 搜「会话内容」(含回复 / 工具),prompts 只看「我问过什么」;因流水无回复,故只做列表 / 搜索,不做 `show`。
 - **即时扫描,不建索引。** 当前规模(31 会话 / 约 17MB)全量解析毫秒级;解析层解耦,将来上千会话时只换这一层即可上索引。
 - **`show` 默认隐藏 thinking 和工具返回**,`--full` 全显;自动上色并尊重 `NO_COLOR`;默认不分页(便于管道),`--pager` 才走 less;长行不硬截断。
 - **备份默认不参与搜索**,`--archived` 时才纳入并标注 `[已归档]`。
 - **`--resume` 闭环**:找到旧对话后能直接 `claude --resume` 接着聊。
-- **v1 范围**:`list / search / show / pick / export / stats / rm / purge`,后续加入 `dedupe` / `rename`,共用同一解析层。
+- **v1 范围**:`list / search / show / pick / export / stats / rm / purge`,后续加入 `dedupe` / `rename` / `prompts`,共用同一解析层。
 - **命令行要好敲(合用顺手)**:命令名 `cgr`;裸参数分派(`cgr 3` = 打开、`cgr 关键词` = 搜索、不带参数 = 列表);别名只留 `pick`→`f`(其余命令敲全名);`pick` 用 fzf 一步挑;`list` 序号高亮、`search` 命中高亮;`show` 读完可一键续聊。
 
 ## 非目标(Non-goals)

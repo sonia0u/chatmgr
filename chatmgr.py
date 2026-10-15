@@ -43,6 +43,14 @@ def projects_dir() -> Path:
     return claude_dir() / "projects"
 
 
+def history_file() -> Path:
+    """用户的提问流水(~/.claude/history.jsonl):每条 prompt 一行,独立于会话 jsonl。
+
+    所以 jsonl 已被删的会话,它的提问仍在这条流水里 —— 这是 prompts 子命令的数据源。
+    """
+    return claude_dir() / "history.jsonl"
+
+
 def archive_dir() -> Path:
     return Path(os.environ.get("CHATMGR_ARCHIVE_DIR") or (Path.home() / "claude-archive"))
 
@@ -75,6 +83,7 @@ def empty_tokens() -> dict:
 SUBCOMMANDS = {
     "list": [],
     "search": [],
+    "prompts": [],
     "show": [],
     "pick": ["f"],
     "export": [],
@@ -605,6 +614,25 @@ def search_units(path: Path, include_all: bool = False, role: str | None = None)
                     yield ("thinking", x.get("thinking") or "")
 
 
+def load_prompts() -> list[dict]:
+    """读提问流水,归一化成 {text, ts, project, session},坏行跳过。
+
+    注意 project 字段和记录里的 cwd 一样带尾随空格,必须 strip。
+    """
+    out: list[dict] = []
+    for rec in iter_records(history_file()):
+        text = rec.get("display")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        out.append({
+            "text": text.strip(),
+            "ts": parse_ts(rec.get("timestamp")),
+            "project": (rec.get("project") or "").strip(),
+            "session": rec.get("sessionId") or "",
+        })
+    return out
+
+
 # ---------------------------------------------------------------- 归档层
 
 
@@ -834,6 +862,56 @@ def cmd_list(args, store: SessionStore):
             f",已只保留最新的一份", "2", on))
     if sys.stdout.isatty():  # 只在人看的终端里提示;管道/脚本不打扰
         print(paint("提示:要筛选 / 打开 / 改名 / 删 → cgr f", "2", on))
+
+
+def cmd_prompts(args, store: SessionStore):
+    """列出 / 搜索你自己的提问流水(~/.claude/history.jsonl)。
+
+    和 search 的分工:search 搜「会话内容」(含 Claude 回复、工具调用);prompts 只看
+    「我问过什么」—— 数据源独立,所以 jsonl 已被删的会话,它的提问仍在这里能翻到。
+    """
+    if not history_file().is_file():
+        die(f"找不到 {history_file()}(还没有提问流水)")
+    prompts = load_prompts()
+    projs = _project_filters(args)
+    if projs:
+        prompts = [p for p in prompts
+                   if any(q in p["project"].lower() or q in Path(p["project"]).name.lower()
+                          for q in projs)]
+    since = parse_when(getattr(args, "since", None))
+    until = parse_when(getattr(args, "until", None), end_of_day=True)
+    if since:
+        prompts = [p for p in prompts if p["ts"] and p["ts"] >= since]
+    if until:
+        prompts = [p for p in prompts if p["ts"] and p["ts"] <= until]
+    pat = None
+    if args.query:
+        pat = re.compile(re.escape(args.query), re.IGNORECASE if args.ignore_case else 0)
+        prompts = [p for p in prompts if pat.search(p["text"])]
+    prompts.sort(key=lambda p: p["ts"] or dt.datetime.min, reverse=True)  # 新的在前
+    if args.limit:
+        prompts = prompts[: args.limit]
+    if args.json:
+        print(json.dumps(
+            [{"text": p["text"], "time": p["ts"].isoformat() if p["ts"] else None,
+              "project": p["project"], "session": p["session"]} for p in prompts],
+            ensure_ascii=False, indent=2))
+        return
+    if not prompts:
+        print("没有匹配的提问")
+        return
+    on = color_enabled()
+    pcolors = project_colors(store.sessions())  # 复用会话配色,各命令下同一项目颜色一致
+    rows = [["时间", "项目", "提问"]]
+    for p in prompts:
+        short = Path(p["project"]).name or p["project"] or "?"
+        rows.append([
+            fmt_time(p["ts"]),
+            paint(truncate(short, 22), pcolors.get(short, "36"), on),
+            _highlight(" ".join(p["text"].split()), pat, on),
+        ])
+    print_table(rows, shutil.get_terminal_size((120, 24)).columns)
+    print(f"\n{len(prompts)} 条提问")
 
 
 def cmd_search(args, store: SessionStore):
@@ -1494,6 +1572,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="每个会话最多显示几处(默认 5;0 = 不限)")
     sp.add_argument("--pick", action="store_true", help="搜完直接进 fzf 挑一个打开 / 续聊")
     sp.set_defaults(func=cmd_search)
+
+    sp = sub.add_parser("prompts", aliases=SUBCOMMANDS["prompts"], parents=[common],
+                        help="列出/搜索你自己的提问流水(含 jsonl 已删的会话)")
+    sp.add_argument("query", nargs="?", help="按关键词过滤,默认忽略大小写")
+    sp.add_argument("-c", "--case-sensitive", dest="ignore_case", action="store_false",
+                    default=True, help="区分大小写(默认忽略大小写)")
+    sp.set_defaults(func=cmd_prompts)
 
     sp = sub.add_parser("show", aliases=SUBCOMMANDS["show"], parents=[common], help="阅读一个会话")
     sp.add_argument("ref", help="id 前缀 / 列表序号 / 标题")

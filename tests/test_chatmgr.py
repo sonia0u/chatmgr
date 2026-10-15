@@ -65,6 +65,11 @@ def write_session(path: Path, records: list[dict]):
     return path
 
 
+def hist_row(text, *, project="/Users/me/proj ", ts=1_700_000_000_000, sid="s1"):
+    """一条 ~/.claude/history.jsonl 记录(注意 project 带尾随空格,和真实数据一致)。"""
+    return {"display": text, "pastedContents": {}, "timestamp": ts, "project": project, "sessionId": sid}
+
+
 # ---------------------------------------------------------------- 基类
 
 
@@ -301,6 +306,42 @@ class RenameTests(BaseTest):
         code, out = self.run_cli("rename", "1")  # stdout 被重定向 ⇒ 非 TTY,不该去 input() 卡住
         self.assertNotEqual(code, 0)
         self.assertIn("非交互", out)
+
+
+# ---------------------------------------------------------------- prompts(提问流水)
+
+
+class PromptsTests(BaseTest):
+    def write_history(self, rows):
+        p = self.config / "history.jsonl"
+        p.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8"
+        )
+        return p
+
+    def test_lists_history_newest_first(self):
+        self.write_history([hist_row("你好", ts=1_700_000_000_000),
+                            hist_row("第二条", ts=1_700_000_100_000)])
+        _, out = self.run_cli("prompts", "-j")
+        data = json.loads(out)
+        self.assertEqual([d["text"] for d in data], ["第二条", "你好"])
+        self.assertEqual(data[0]["session"], "s1")
+
+    def test_query_filter_default_ignores_case(self):
+        self.write_history([hist_row("MD 渲染"), hist_row("无关")])
+        _, out = self.run_cli("prompts", "md", "-j")
+        self.assertEqual([d["text"] for d in json.loads(out)], ["MD 渲染"])
+
+    def test_project_filter_matches_short_name(self):
+        # project 带尾随空格;按短名(最后一段)过滤要能命中
+        self.write_history([hist_row("x", project="/Users/me/anotherproj ")])
+        _, out = self.run_cli("prompts", "-p", "anotherproj", "-j")
+        self.assertEqual(len(json.loads(out)), 1)
+
+    def test_missing_history_dies(self):
+        code, out = self.run_cli("prompts")  # setUp 只建了 projects/,没建 history.jsonl
+        self.assertNotEqual(code, 0)
+        self.assertIn("找不到", out)
 
 
 # ---------------------------------------------------------------- 输出契约(轻量)

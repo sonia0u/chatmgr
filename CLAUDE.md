@@ -24,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|
 | `~/.local/bin/cgr`(及 `chatmgr`) | 软链 → 仓库内 `chatmgr.py`,让 `cgr` / `chatmgr` 可从任意目录运行 |
 | `~/.claude/projects/<项目>/<会话id>.jsonl` | **数据源(只读)**;子 agent 在 `<会话id>/subagents/` |
-| `~/.claude/history.jsonl` | 用户的 prompt 流水(本工具暂未使用) |
+| `~/.claude/history.jsonl` | 用户的 prompt 流水(每条 prompt 一行);**`prompts` 子命令读取**,数据源与会话 jsonl 独立 |
 | `~/.claude/settings.json` | 环境配置,含 `cleanupPeriodDays`;**不属于本仓库** |
 | `~/claude-archive/<项目>/<会话id>.jsonl` | 归档/备份,同级有 `manifest.json`;**仓库外**,不入 git |
 | `~/claude-archive/_dupes/<会话id>.<来源文件夹>.jsonl` | `dedupe` 移入的重复副本(保留不删) |
@@ -41,11 +41,11 @@ python3 tests/test_chatmgr.py        # 跑测试(标准库 unittest)
 cgr <命令> -h                        # 看某子命令的全部参数
 ```
 
-子命令:`list / search / show / pick / export / stats / rm / purge / dedupe / rename`(`pick` 有别名 `f`,其余一律敲全名)。
+子命令:`list / search / prompts / show / pick / export / stats / rm / purge / dedupe / rename`(`pick` 有别名 `f`,其余一律敲全名)。
 
 **裸参数分派**(`main()` 里做):空 → `list`;首参以 `-` 开头 → `list`;纯数字 → `show`(当序号);形如会话 id 前缀(≥6 位十六进制,可带 `-`)→ `show`;其他词 → `search`;已知命令/别名 → 原样。**推论**:`search` 的动词只有在"词在前"时才能省(`cgr yazi --grep`),写成 `cgr --grep yazi` 会走 `list` 而报错。
 
-**验证 = 跑测试 + 手动跑关键命令。** `python3 tests/test_chatmgr.py`(标准库 unittest,桩数据全在临时目录)覆盖解析 / `resolve` / 以及破坏性命令"非 TTY 不动文件"的安全底线;但它不覆盖观感与交互,**改完仍要实跑一遍 `list` 和目标子命令**。注意:会话数 = jsonl 文件数 **减去重复 id**(同一会话可能在多个项目文件夹各有一份,见下;`list` 会提示"重复会话")。
+**验证 = 跑测试 + 手动跑关键命令。** `python3 tests/test_chatmgr.py`(标准库 unittest,桩数据全在临时目录)覆盖解析 / `resolve` / `rename` 写回 / `prompts` 过滤 / 以及破坏性命令"非 TTY 不动文件"的安全底线;但它不覆盖观感与交互,**改完仍要实跑一遍 `list` 和目标子命令**。注意:会话数 = jsonl 文件数 **减去重复 id**(同一会话可能在多个项目文件夹各有一份,见下;`list` 会提示"重复会话")。
 
 ## 安全测试(重要)
 

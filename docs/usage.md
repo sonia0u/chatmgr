@@ -27,6 +27,7 @@ cgr <命令> -h                        # 某子命令的全部参数
 |---|---|---|
 | `cgr list` | `cgr` | 列出会话 |
 | `cgr search <词>` | `cgr <词>` | 搜索内容 |
+| `cgr prompts [词]` | — | 列出/搜索**你自己的提问流水**(含 jsonl 已删的会话) |
 | `cgr show <ref>` | `cgr <序号>` | 阅读一个会话 |
 | `cgr pick [词]` | `cgr f` | fzf 交互选择(可加 `词` 初筛) |
 | `cgr export <ref>` | — | 导出 md / txt / json |
@@ -188,6 +189,44 @@ cgr search 词 -p 项目 -s 3d     # 限定项目 + 近 3 天
 ```
 
 结果里每个会话都附 `→ 打开 cgr <序号> · 续聊 cgr <序号> -r`,可直接复制。
+
+---
+
+## prompts — 我的提问流水
+
+**完整语法**
+
+```bash
+cgr prompts [词] [-c] [全局参数]
+```
+
+**说明** 数据源是 `~/.claude/history.jsonl` —— Claude Code 记的**你自己的提问流水**,每条一行。它和会话 jsonl **互相独立**,所以:
+
+- **jsonl 已经被删的会话,它的提问仍留在这里** —— `prompts` 翻得到 `search` 翻不到的东西
+- 但**只有你的提问**,没有 Claude 回复和工具调用(那些要用 `search`)
+
+一句话分工:**`search` 搜「会话内容」,`prompts` 只看「我问过什么」**。两者互补。
+
+**输出**:表格 `时间 / 项目 / 提问`,按时间**倒序**(新的在前)。**默认忽略大小写**,`-c` 区分。`-j` 输出 `[{text, time, project, session}]`(含 `session` id,可拿去和 `search` / `show` 对照)。
+
+**常用选项**(其余全局参数见上)
+
+| 写法 | 说明 |
+|---|---|
+| `cgr prompts 词` | 只列提问里含「词」的 |
+| `cgr prompts 词 -c` | `-c`:区分大小写(默认忽略) |
+| `cgr prompts -p 项目` | 只在某个项目的提问里翻 |
+| `cgr prompts -s 7d` | 只看近 7 天的提问 |
+| `cgr prompts -l 20` | 最多 20 条 |
+
+**例子**
+
+```bash
+cgr prompts                        # 全部提问,新的在前
+cgr prompts 部署                    # 问过哪些和「部署」有关的
+cgr prompts -p 项目 -s 30d          # 某项目近 30 天的提问
+cgr prompts -j | jq -r '.[].text'   # 只把提问正文抽出来
+```
 
 ---
 
@@ -443,6 +482,7 @@ cgr rename 3                           # 不给标题 → 交互式输入
 | `cgr` | 看有哪些会话 |
 | `cgr f` | 交互浏览,选中即打开 |
 | `cgr 词` | 找"上次在哪聊过某词" |
+| `cgr prompts 词` | 在**我问过的提问**里找(连 jsonl 已删的会话都能翻到) |
 | `cgr 3` | 读第 3 个会话 |
 | `cgr 3 -r` | 读完接着聊 |
 | `cgr export 3 -o 对话.md` | 把第 3 个会话导出成文件 `对话.md` |
