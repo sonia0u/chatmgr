@@ -39,8 +39,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | **Codex 数据源(只读)**;一个会话可能横跨多个文件 |
 | `~/.codex/archived_sessions/*.jsonl` | Codex 自己的归档(`cod list -a` 才纳入) |
 | `~/.codex/session_index.jsonl` | Codex 的标题索引 `id → thread_name`;**`cod rename` 写这里**(追加式,取最后一行) |
-| `/Applications/ChatGPT.app/…/codex-cli/bin/codex` | Codex 自带的 CLI(app 包里,**不在 PATH**);`cod` 的删/改名/续聊要用它 |
-| `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` / `$CHATMGR_CODEX_DIR` / `$CHATMGR_CODEX_BIN` | 覆盖上面几个根目录与可执行文件(测试时用,见「安全测试」) |
+| `codex`(在 `$PATH` 上,如 `~/.local/bin/codex`) | Codex 独立版 CLI;`cod` 的删/改名/续聊要用它。找不到时回退到 app 包里自带的那份 `/Applications/ChatGPT.app/…/codex-cli/bin/codex` |
+| `~/.codex/thread_history_1.sqlite` | Codex 的 `thread_items` / `thread_turns` —— **建在 rollout jsonl 之上的增量索引**(存的是 byte offset),不是把 jsonl 搬走。**我们不用它**,但它说明格式在演进 |
+| `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` / `$CHATMGR_CODEX_DIR` / `$CHATMGR_CODEX_BIN` / `$CODEX_HOME` | 覆盖上面几个根目录与可执行文件。`$CODEX_HOME` 是 **Codex 自己的**变量,我们必须认(否则用户挪走数据后,我们读一处、删另一处);`$CHATMGR_*` 是我们测试用的,优先级更高 |
 
 ## 常用命令
 
@@ -72,7 +73,10 @@ export CHATMGR_CODEX_DIR=/tmp/fake/codex     # 其下需有 sessions/<年>/<月>
 export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"没有 codex"
 ```
 
-**Codex 这边更要紧**:`cod rename` 是**真的写你的 `~/.codex/session_index.jsonl`**,`cod rm` 是**真的调 `codex delete`**。测这两个必须同时设 `CHATMGR_CODEX_DIR`(改到临时目录)和 `CHATMGR_CODEX_BIN`(指向桩脚本),**一个都不能漏**。`tests/` 里的 `CodexTest` 就是这套;`codex_bin()` 的取值顺序是 `$CHATMGR_CODEX_BIN` → `$PATH` 上的 `codex` → app 包内路径。
+**Codex 这边更要紧**:`cod rename` 是**真的写你的 `~/.codex/session_index.jsonl`**,`cod rm` 是**真的调 `codex delete`**。测这两个必须同时设 `CHATMGR_CODEX_DIR`(改到临时目录)和 `CHATMGR_CODEX_BIN`(指向桩脚本),**一个都不能漏**。`tests/` 里的 `CodexTest` 就是这套。
+
+`codex_bin()` 的取值顺序:`$CHATMGR_CODEX_BIN` → `$PATH` 上的 `codex` → app 包内路径。
+`codex_dir()` 的顺序:`$CHATMGR_CODEX_DIR` → `$CODEX_HOME`(Codex 自己的变量)→ `~/.codex`。
 
 `CLAUDE_CONFIG_DIR` 决定 `~/.claude` 的位置,`CHATMGR_ARCHIVE_DIR` 决定归档目录,`CHATMGR_CODEX_DIR` 决定 `~/.codex` 的位置。
 

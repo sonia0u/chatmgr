@@ -79,7 +79,15 @@ def archive_files() -> list[Path]:
 
 
 def codex_dir() -> Path:
-    return Path(os.environ.get("CHATMGR_CODEX_DIR") or (Path.home() / ".codex"))
+    """Codex 的数据根目录。
+
+    必须认 `$CODEX_HOME`(Codex 自己的变量):用户若把数据挪到别处,而我们只认
+    `~/.codex`,就会出现"读的是一处、`cod rm` 删的是另一处"。测试用的
+    `$CHATMGR_CODEX_DIR` 优先级最高,免得真去碰用户的数据。
+    """
+    return Path(os.environ.get("CHATMGR_CODEX_DIR")
+                or os.environ.get("CODEX_HOME")
+                or (Path.home() / ".codex"))
 
 
 def codex_index_file() -> Path:
@@ -90,8 +98,9 @@ def codex_index_file() -> Path:
 def codex_bin() -> str | None:
     """Codex CLI 的位置。找不到返回 None(读相关功能照常,只有删/改名/续聊不可用)。
 
-    app 自带一份(不在 PATH 上),所以除了 $PATH 还要看 app 包里的官方入口。
-    $CHATMGR_CODEX_BIN 置空 = 明确当作"没有 codex"(测试用)。
+    顺序:$CHATMGR_CODEX_BIN(测试)→ $PATH 上的 codex(用户自己装的独立版)→
+    app 包里自带的那份(装了 ChatGPT.app 但这台机器没有独立 CLI 时的兜底)。
+    $CHATMGR_CODEX_BIN 置空 = 明确当作"没有 codex"。
     """
     env = os.environ.get("CHATMGR_CODEX_BIN")
     if env is not None:

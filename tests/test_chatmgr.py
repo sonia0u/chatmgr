@@ -410,7 +410,8 @@ class CodexTest(BaseTest):
         stub.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\nexit 0\n', encoding="utf-8")
         stub.chmod(0o755)
         self.stub = stub
-        self._env.update({k: os.environ.get(k) for k in ("CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN")})
+        self._env.update({k: os.environ.get(k)
+                          for k in ("CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN", "CODEX_HOME")})
         os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)
         os.environ["CHATMGR_CODEX_BIN"] = str(stub)
 
@@ -573,6 +574,14 @@ class CodexTest(BaseTest):
         self.assertNotEqual(code, 0)
         self.assertIn("找不到 codex 命令", out)
         self.assertEqual(self.called(), [])
+
+    def test_codex_home_env_is_honored(self):
+        """Codex 自己的 $CODEX_HOME 也要认:否则用户挪走数据后,我们读一处、删另一处。"""
+        os.environ.pop("CHATMGR_CODEX_DIR", None)
+        os.environ["CODEX_HOME"] = str(self.codex)
+        self.assertEqual(chatmgr.codex_dir(), self.codex)
+        os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)  # 我们的变量优先级更高
+        self.assertEqual(chatmgr.codex_dir(), self.codex)
 
     # ---- 命令名决定默认源
 

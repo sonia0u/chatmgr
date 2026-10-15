@@ -89,11 +89,15 @@ cgr list -S codex   # 不换命令名,用 -S 临时换源(大写 S,避开 -s/sin
 3. 多文件会话里 **UserMessage 的 `item.id` 互不重复**(15 个多文件会话零重叠)→ 按 `timestamp` 归并即可,不用去重。`ordinal` 是**每文件各自从 0 开始**,不能跨文件排序。
 4. token 字段恒定满足 `cached_input_tokens ⊆ input_tokens`、`reasoning_output_tokens ⊆ output_tokens`、`total_tokens == input+output`(实测 3171 条)。**Codex 的 `input_tokens` 含缓存**,而 Claude 的不含 → 所以 `input = input_tokens − cached_input_tokens`。有实测会话 input 到 18 万,其中 18.3 万是缓存回读。
 5. `~/.codex/session_index.jsonl` 是**追加式**:实测 68 行只有 63 个 id(5 个 id 多行 → Codex 自己改标题就是再追加一行);`updated_at` 非单调;mtime 与会话文件同步;还留着 **20 条"文件已删但索引还在"** 的条目 → 它**不是**从会话文件重新生成的,是独立维护的。**读标题必须取最后一行。** 里面也含 guardian_review 子线程的标题。
-6. **Codex 自带 CLI,藏在 app 包里(不在 PATH)**:`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`(官方入口,`codex-package.json` 里写的 entrypoint;它是个 shim,转发到 `CodexCLI.app/Contents/MacOS/codex`)。子命令:`resume` / `archive` / `unarchive` / `delete` / `fork` / `agents` / `migrate-rollouts` …
+6. **Codex CLI**:先看 `$PATH` 上的 `codex`(2026-10-15 装的是独立版 `0.162.1`,在 `~/.local/bin/codex` → `~/.codex/packages/standalone/current/bin/codex`);没有才回退到 app 包里自带的那份 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`(`codex-package.json` 里的官方 entrypoint,一个 shim)。子命令:`resume` / `archive` / `unarchive` / `delete` / `fork` / `agents` / `doctor` / `migrate-rollouts` …
    - **`codex resume <SESSION_ID>` 支持 UUID** —— 与 `claude --resume` 对称,所以"续聊"是能做的
    - **`codex archive` / `delete` 存在** —— 所以 Codex 的删除/备份用它自己的,我们不再造 `~/claude-archive` 那一套
+   - **`$CODEX_HOME` 是它的数据根目录变量** —— 我们的 `codex_dir()` 必须认(否则用户挪走数据后,`cod list` 读一处、`cod rm` 删另一处)
 7. **有坏行**:至少一个文件含被截断的 JSON(流式写入的残行)。逐行 try/except 是必需的。
-8. **警告**:`codex migrate-rollouts` 的描述提到迁移到 "**paginated thread history**" —— 它正在换存储格式。这就是为什么解析要一直保持"逐行 try/except + 未知类型忽略"。
+8. **格式确实在演进,但 jsonl 仍是源头**(2026-10-15 复查)。`codex migrate-rollouts` 说的"paginated thread history"落地成了 `~/.codex/thread_history_1.sqlite`(实测 47MB:`thread_turns` 462 行、`thread_items` 9055 行)。但它的关键字段是 **`thread_history_projection_state.next_rollout_byte_offset`** —— 它记的是"已经投影到 rollout jsonl 的第几个字节",`thread_items` 里存的 `rollout_ordinal` / `item_json` 也是指回 jsonl 的位置。
+   ⇒ **它是建在 jsonl 之上的增量索引,不是把 jsonl 搬走**;rollout 文件仍在持续追加(复查当天还新建了 19 个)。所以按 jsonl 解析的做法依然成立。
+   将来若真出现"jsonl 不再写、只有 sqlite"的情况,再考虑加一个 sqlite 读取源(`item_type` / `created_at_ms` 都已经是规范化好的字段,读起来比解析 jsonl 还简单)。
+9. **`codex doctor` 自己也报了两条 thread 问题**:`rollout files are missing from the state DB`(增量索引没吃完全部文件)和 `duplicate thread inventory entries found`(**就是 `session_index.jsonl` 里那 5 个重复 id**)。两条都印证了我们的读法:"取最后一行"是对的,索引与投影不是权威全集。
 
 ### OpenCode(未实现,**会话正文存哪仍未知**)
 
