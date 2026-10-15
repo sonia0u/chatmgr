@@ -268,6 +268,41 @@ class DestructiveSafetyTests(BaseTest):
         self.assertEqual(len(list((self.archive / "_dupes").glob("*.jsonl"))), 1, "另一份应移入 _dupes/")
 
 
+# ---------------------------------------------------------------- rename(唯一会写回 jsonl 的命令)
+
+
+class RenameTests(BaseTest):
+    def test_rename_writes_custom_title(self):
+        p = self.live("aaaa1111", [user("原始首句")])
+        self.run_cli("rename", "1", "我的新标题")
+        s = chatmgr.load_session(p)  # 重新解析,验证确实落到了文件里
+        self.assertEqual(s.title, "我的新标题")
+        self.assertTrue(s.title_explicit)
+
+    def test_rename_appends_newline_when_file_lacks_one(self):
+        # 回归:文件末尾没有换行时,追加前必须补一个,否则新记录会和上一行粘成一行
+        p = self.config / "projects" / "proj" / "aaaa1111.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(user("首句"), ensure_ascii=False), encoding="utf-8")  # 故意不换行
+        self.run_cli("rename", "1", "改过了")
+        for line in p.read_text(encoding="utf-8").splitlines():
+            json.loads(line)  # 每一行都应是合法 JSON
+        self.assertEqual(chatmgr.load_session(p).title, "改过了")
+
+    def test_rename_refuses_archived_copy(self):
+        b = write_session(self.archive / "proj" / "aaaa1111.jsonl", [user("备份")])
+        code, out = self.run_cli("rename", "aaaa1111", "新标题", "-a")
+        self.assertNotEqual(code, 0)
+        self.assertIn("归档", out)
+        self.assertNotIn("新标题", b.read_text(encoding="utf-8"), "归档副本不该被写入")
+
+    def test_rename_without_title_noninteractive_exits(self):
+        self.live("aaaa1111", [user("x")])
+        code, out = self.run_cli("rename", "1")  # stdout 被重定向 ⇒ 非 TTY,不该去 input() 卡住
+        self.assertNotEqual(code, 0)
+        self.assertIn("非交互", out)
+
+
 # ---------------------------------------------------------------- 输出契约(轻量)
 
 
