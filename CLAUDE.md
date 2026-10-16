@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-管理本机几个 AI Agent(Claude Code / Codex / OpenCode)聊天记录的 CLI。纯 Python 标准库、单文件、无依赖、无构建步骤。
+管理本机几个 **Agent CLI**(Claude Code / Codex / OpenCode)的聊天记录。纯 Python 标准库、单文件、无依赖、无构建步骤。
 
 | 命令 | 管哪些源 | 数据 |
 |---|---|---|
