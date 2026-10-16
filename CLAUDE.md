@@ -24,6 +24,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|
 | `chatmgr.py` | 工具本体,可执行,仓库根 |
 | `CLAUDE.md` | 本指引(逐条维护,改约定要同步这里) |
+| `README.md` | 公开仓库首页(给访客看的;详细用法指到 `docs/`) |
+| `LICENSE` | MIT —— 公开仓库必须有,否则默认"保留所有权利",别人不能合法使用 |
 | `docs/prd.md` | 需求 / 功能规格 / 已确认的产品决策 |
 | `docs/usage.md` | 命令手册(每个子命令的详细用法) |
 | `docs/sources.md` | 多数据源:接一个新 agent 要回答的几个问题、代码里要动的几处、以及各源的实测记录 |
