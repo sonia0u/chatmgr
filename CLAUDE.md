@@ -8,9 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 命令 | 管哪些源 | 数据 |
 |---|---|---|
-| `cgr`(=`chatmgr`) | **全部**,混排 | Claude + Codex |
+| `cgr`(=`chatmgr`) | **全部**,分段列出 | Claude + Codex + OpenCode |
 | `cla` | 只看 Claude Code | `~/.claude/projects/*/*.jsonl` |
 | `cod` | 只看 Codex | `~/.codex/sessions/**/*.jsonl` |
+| `opc` | 只看 OpenCode | `~/.local/share/opencode/opencode.db`(SQLite) |
 
 三个名字是**同一个文件的不同软链** —— 靠"自己被叫什么名字"决定默认管哪些源(`SOURCES_BY_PROG`),`-S/--source` 可覆盖(可重复或逗号分隔,如 `-S claude,codex`)。子命令、筛选、指认方式完全一致;序号的基准是**当前命令看到的那个列表**。
 以后加新 agent:补一个 `Source` 实现 + 在 `SOURCES_BY_PROG` 加一行 + 建个软链。
@@ -42,17 +43,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `~/.codex/archived_sessions/*.jsonl` | Codex 自己的归档(`cod list -a` 才纳入) |
 | `~/.codex/state_<N>.sqlite` | Codex 的**状态库**(`threads` / `thread_dynamic_tools` / …)。**标题的真身是 `threads.name`** —— `cod rename` 写这里,`codex archive <名字>` 也认这里。取最大版本号的那个文件 |
 | `~/.codex/session_index.jsonl` | 标题索引的**镜像**(`id → thread_name`),覆盖比状态库全,**但 Codex 不认它**。我们只在读标题时当兜底、改名时顺带补一条 |
+| `~/.local/share/opencode/opencode.db` | **OpenCode 数据源(只读)**;一张 `session_v2` 表一个会话、一张 `session_message` 表一条消息。库不存在 = 它还没用过(不算错误) |
+| `~/.local/state/opencode/prompt-history.jsonl` | OpenCode 的提问流水(**我们的 `prompts` 还不读它**) |
 | `codex`(在 `$PATH` 上,如 `~/.local/bin/codex`) | Codex 独立版 CLI;`cod` 的删/改名/续聊要用它。找不到时回退到 app 包里自带的那份 `/Applications/ChatGPT.app/…/codex-cli/bin/codex` |
+| `opencode`(在 `$PATH` 上) | OpenCode CLI;`opc` 的删/备份/续聊要用它(`session delete` / `export`,经后台服务执行) |
 | `~/.codex/sqlite/codex-dev.db` | **Codex 桌面应用自己的库**。侧边栏读的会话目录在 `local_thread_catalog`(`display_title` / `cwd` / `source_kind`)。**`codex delete` 不碰它** —— 不补一刀的话,会话删了、侧边栏还挂着一个点不开的空壳。`cod rm` 的直删会补(`_purge_desktop_catalog`) |
 | `~/.codex/thread_history_1.sqlite` | Codex 的 `thread_items` / `thread_turns` —— **建在 rollout jsonl 之上的增量索引**(存的是 byte offset),不是把 jsonl 搬走。**我们不用它**,但它说明格式在演进 |
-| `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` / `$CHATMGR_CODEX_DIR` / `$CHATMGR_CODEX_BIN` / `$CODEX_HOME` | 覆盖上面几个根目录与可执行文件。`$CODEX_HOME` 是 **Codex 自己的**变量,我们必须认(否则用户挪走数据后,我们读一处、删另一处);`$CHATMGR_*` 是我们测试用的,优先级更高 |
+| `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` / `$CHATMGR_CODEX_DIR` / `$CHATMGR_CODEX_BIN` / `$CHATMGR_OPENCODE_DIR` / `$CHATMGR_OPENCODE_BIN` / `$CODEX_HOME` | 覆盖上面几个根目录与可执行文件。`$CODEX_HOME` / `$XDG_DATA_HOME` 是**别人自己的**变量,我们必须认(否则用户挪走数据后,我们读一处、删另一处);`$CHATMGR_*` 是我们测试用的,优先级更高 |
 
 ## 常用命令
 
 ```bash
-cgr <命令>                          # ~/.local/bin/cgr 已软链到本文件;cgr = 全部源混排
+cgr <命令>                          # ~/.local/bin/cgr 已软链到本文件;cgr = 全部源,分段列出
 cla <命令>                          # 只看 Claude Code
 cod <命令>                          # 只看 Codex
+opc <命令>                          # 只看 OpenCode
 python3 chatmgr.py <命令>           # 或直接跑(argv[0] 是 chatmgr.py,也当"全部")
 cgr                                 # 不带子命令=list;cgr 3=show 3;cgr 关键词=search
 cgr list -S codex                   # 也可以不换命令名,用 -S 临时收窄(可逗号分隔)
@@ -76,6 +81,8 @@ export CLAUDE_CONFIG_DIR=/tmp/fake/config    # 其下需有 projects/<项目>/<�
 export CHATMGR_ARCHIVE_DIR=/tmp/fake/archive # Claude 的归档目录
 export CHATMGR_CODEX_DIR=/tmp/fake/codex     # 其下需有 sessions/<年>/<月>/<日>/*.jsonl
 export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"没有 codex"
+export CHATMGR_OPENCODE_DIR=/tmp/fake/opencode    # 其下需有 opencode.db
+export CHATMGR_OPENCODE_BIN=/tmp/fake/oc-stub.sh  # 桩脚本;置空 = 当作"没有 opencode"
 ```
 
 **Codex 这边更要紧**:`cod rename` 是**真的改你的 `~/.codex/state_<N>.sqlite`**(那是个正在被应用使用的活数据库),`cod rm` 是**真的调 `codex delete` / `archive`**。测这两个必须同时设 `CHATMGR_CODEX_DIR`(改到临时目录,夹具里得有 `state_5.sqlite` 和 `threads(id, name)` 表)和 `CHATMGR_CODEX_BIN`(指向桩脚本),**一个都不能漏**。`tests/` 里的 `CodexTest` 就是这套。
@@ -87,18 +94,20 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 
 `CLAUDE_CONFIG_DIR` 决定 `~/.claude` 的位置,`CHATMGR_ARCHIVE_DIR` 决定归档目录,`CHATMGR_CODEX_DIR` 决定 `~/.codex` 的位置。
 
-**`cgr` 默认是"全部源",所以任何测试都必须同时把 Codex 目录也指到临时目录** —— 否则 `list` 会去读你真实的 `~/.codex`。`tests/` 里 `BaseTest.setUp` 已经这么做(而且把 `CHATMGR_CODEX_BIN` 置空,免得测试真去调 codex)。
+**`cgr` 默认是"全部源",所以任何测试都必须把 Codex 和 OpenCode 的目录也指到临时目录** —— 否则 `list` 会去读你真实的 `~/.codex` / `opencode.db`。`tests/` 里 `BaseTest.setUp` 已经这么做(而且把两个 `*_BIN` 都置空,免得测试真去调它们)。OpenCode 的测试库要建 `session_v2` 和 `session_message` 两张表。
 
 ## 架构
 
 单文件,但分层,**上层依赖下层,解析层不依赖 CLI**(便于将来抽成模块或接 MCP):
 
-1. **数据源层** —— `Source` 基类 + `ClaudeSource` / `CodexSource`(注册在 `SOURCES`)。每个源负责:发现文件并归一化成 `Session`、按时间产出 `(kind, text)` 事件流、`daily_usage()`(供 `stats --by day`)、以及写操作(`resume_argv` / `delete` / `set_title`)。**命令层只认 `Session` 和这两个元组流,所以加一个源 = 补一个实现,基本不用动命令。**
-2. **解析层** —— Claude:`load_session` / `_claude_events` / `_claude_units`。Codex:`_discover_codex` / `_codex_build` / `_codex_items` / `_codex_merged_records`。
-3. **归档层** —— Claude 走 `backup_session` / `load_manifest` / `save_manifest`(原样复制 jsonl + manifest);**Codex 不经过这层**,它调自己自带的 `codex archive` / `delete`。
+1. **数据源层** —— `Source` 基类 + `ClaudeSource` / `CodexSource` / `OpenCodeSource`(注册在 `SOURCES`)。每个源负责:发现文件并归一化成 `Session`、按时间产出 `(kind, text)` 事件流、`daily_usage()`(供 `stats --by day`)、以及写操作(`resume_argv` / `delete` / `set_title`)。**命令层只认 `Session` 和这两个元组流,所以加一个源 = 补一个实现,基本不用动命令。**
+2. **解析层** —— Claude:`load_session` / `_claude_events` / `_claude_units`。Codex:`_discover_codex` / `_codex_build` / `_codex_items` / `_codex_merged_records`。OpenCode:`_opencode_load` / `_opencode_msgs` / `_opencode_events` / `_opencode_units`。
+3. **归档层** —— Claude 走 `backup_session` / `load_manifest` / `save_manifest`(原样复制 jsonl + manifest);**Codex 走它自带的 `codex archive` / `delete`;OpenCode 没有归档概念,`rm` 的"删并备份" = `opencode session export` 存成 JSON 到 `<归档>/_opencode/`**(所以 `purge` 管不到它)。
 4. **CLI 层** —— `build_parser` / `cmd_*` / `resolve` / `source_of`。
 
-数据流:`SessionStore.sessions()` 把**每个选中源**的 `discover()` 结果并起来 —— **按源分段**(段序 = 选中源顺序),段内各自按最后活动时间倒序,再按 `(source, sid)` 去重。`cgr` 就是多源分段,`cla`/`cod` 只有一段。Claude 侧扫 `projects_dir()/*/*.jsonl`(**只扫顶层,不含 `<会话>/subagents/`**);Codex 侧扫 `~/.codex/sessions/**/*.jsonl`,**按 `session_id` 把多文件归成一个会话**。
+数据流:`SessionStore.sessions()` 把**每个选中源**的 `discover()` 结果并起来 —— **按源分段**(段序 = 选中源顺序),段内各自按最后活动时间倒序,再按 `(source, sid)` 去重。`cgr` 就是多源分段,`cla`/`cod`/`opc` 只有一段。Claude 侧扫 `projects_dir()/*/*.jsonl`(**只扫顶层,不含 `<会话>/subagents/`**);Codex 侧扫 `~/.codex/sessions/**/*.jsonl`,**按 `session_id` 把多文件归成一个会话**;OpenCode 侧直接查 `opencode.db` 的 `session_v2`。
+
+**会话的全局标识是 `(source, sid)`**(`skey()`),序号索引按它编号 —— **不能按文件路径**:OpenCode 一个库里装着所有会话,路径全是同一个。
 
 `iter_events()` / `search_units()` 是**另两条独立的读取路径**,按原始顺序流式产出内容,供 `show` / `search` / `export` 使用(不复用 `load_session` 的聚合结果);它们按 `s.source` 分派到对应源。
 
@@ -128,6 +137,19 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 - **`cwd` 可能是 Windows 路径**(`E:\...`)。`Session.short_project` 走 `basename_any()`,同时认 `/` 和 `\` —— 直接用 `Path().name` 在 macOS 上会返回整串。
 - **文件里可能有被截断的坏行**(流式写入的残行)。沿用逐行 try/except。
 
+### OpenCode 的坑(2026-10-16 实测)
+
+- **v2 是服务架构**:后台跑一个本地 HTTP 服务(带密码),CLI/TUI 只是客户端。所以写操作(删 / 导出)**走它的 CLI**,而不是直接改库。
+- **存储是一个 SQLite**:`<data>/opencode.db`(`opencode debug paths` 自己报的 data 目录;认 `$XDG_DATA_HOME`)。**所有会话共用一个库** —— 所以序号索引不能按文件路径编号(见「架构」那节的 `skey()`)。
+- **表结构比 Claude / Codex 都规整**:`session_v2` 一个会话一行(`title` / `directory` / `time_created`·`time_updated` / 五个 token 列),`session_message` 一条消息一行(`type` / `seq` 定序 / `data` 是 JSON)。
+- **消息类型**:`user` / `assistant` / `idle` / `model-switched` —— **后两种要跳过**。
+- **`assistant.content[]` 的 part**:`{"type":"text"}` / `{"type":"reasoning"}` / `{"type":"tool","name":…,"state":{"input":…,"content":[{"type":"text"}]}}`。工具调用和"工具返回"分别对应我们的 `tool` / `tool_result`。
+- **token 口径和 Claude 一样:`input` 不含缓存**(不是 Codex 那种)。**这是对过账的,不是猜的** —— 拿它自己的 `opencode stats` 比:它报 29k,正好等于 input+output+reasoning+cache_read 相加;若 input 含缓存,那个数会明显更大。所以 `tok = input+output` 直接用。
+- **`title` 可能是空的**(实测:失败的会话没有标题),要用首句提问兜底。
+- **失败/没产出的会话一堆列都是 0**(模型 429 之类)——`has_usage=False`,`list` 显示 `—`。**别把它当成"0 用量"。**
+- **库里没有"单会话字节数"**,`size` 用该会话所有 `session_message.data` 的字节数之和(该会话的消息数据量)。
+- **`parent_id` / `fork_session_id` 的含义未验**(实测全是 NULL),所以**不做过滤** —— 宁可能多列出来,也别把真会话藏了。Codex 那种"排除子线程"的规则在这里**没有证据支撑**,不要照搬。
+
 ## 不可违反的设计约定
 
 - **破坏性操作默认只预览**:`rm` / `purge` / `dedupe` 不加 `--force` 只打印预览;**交互终端下再问一句**(`rm` 用 `_ask_delete()` 三选:y=直删、n=删并备份、其他=取消;`purge` / `dedupe` 用 `_confirm()`);**非 TTY 一律只预览、绝不执行**。这是安全底线,不要加"默认即执行"的开关,脚本里显式用 `--force`。
@@ -135,7 +157,8 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 - **归档 = 原样复制 jsonl**(可还原),不是转 markdown。markdown 属于 `export`,是另一条线。
 - **Codex 的删 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:`cod rm` 的 `n`(备份)= `codex archive`(挪进它自己的 `archived_sessions/`,`cod list -a` 看得到,`codex unarchive` 可取回),`y`/`-f`(直删)= **`codex delete --force`**,`show -r` = `codex resume <id>`。所以 `~/claude-archive` 和 manifest **完全不参与 Codex**。`cod purge` 因此是空操作(只说明一句)。
   **那个 `--force` 是必须的**:`codex delete` 自带交互确认,而我们是以子进程调它、没有 TTY,不加就被拒(`cannot confirm session deletion without an interactive terminal`)。**因此"确认"这一步只剩我们自己的提示 —— 这恰恰是"非 TTY 只预览、绝不执行"这条底线比以前更要紧的原因。** `archive` 不需要 `--force`(安全操作,自己不拦)。
-- **改名两边机制不同,但都"写回原处"**:Claude 是往会话 jsonl 追加 `custom-title`;Codex 是 `UPDATE state_<N>.sqlite` 的 `threads.name`(**不是** `session_index.jsonl` —— 写那里 Codex 认不到,实测过;jsonl 只顺带补一条镜像)。**刻意不动 `updated_at` / `recency_at`**:那会把会话顶到 Codex 侧边栏最前面,改个名字不该改变它的时间位置。
+- **改名两边机制不同,但都"写回原处"**:Claude 是往会话 jsonl 追加 `custom-title`;Codex 是 `UPDATE state_<N>.sqlite` 的 `threads.name`(**不是** `session_index.jsonl` —— 写那里 Codex 认不到,实测过;jsonl 只顺带补一条镜像);**OpenCode 是 `UPDATE session_v2.title`**(它没有改名命令)。**刻意不动 `updated_at` / `recency_at`**:那会把会话顶到侧边栏最前面,改个名字不该改变它的时间位置。
+- **OpenCode 的删 / 备份 / 续聊也走它自己的 CLI**:`opc rm` 的直删 = `opencode session delete <id>`(它**没有**交互确认参数,和 codex 不同),`n`(删并备份)= 先 `opencode session export` 存成 JSON 到 `<归档>/_opencode/` 再删(**这份能用 `opencode session import` 装回去**),`show -r` = `opencode --session <id>`。注意:`purge` 只扫 Claude 那套 `<归档>/<项目>/*.jsonl`,**管不到 `_opencode/`**,要清自己 rm。
 - **`purge` / `list -a` 不碰 `_dupes/`**:`dedupe` 挪走的重复副本是"刻意保留"的兜底,不算备份。归档扫描统一走 `archive_files()`(排除 `<归档>/_dupes/`),否则 `purge` 会把刻意留的副本一并清掉。要清副本自己 `rm -r <归档>/_dupes`。
 - **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
 
@@ -143,7 +166,7 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
 - 子命令别名只保留 `pick`→`f`(常用),其余一律敲全名 —— 集中在模块常量 `SUBCOMMANDS`(其余命令的别名列表为空),`KNOWN_COMMANDS` 供裸参数分派判断。要增删别名改这一处即可。注意别名删掉后,`cgr ls` 这类词会被当成**搜索**(非命令词都走 search)。
-- 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived) `-S`(source,可重复或逗号分隔,取值 `claude` / `codex`;用**大写 S** 避开 `-s`)。默认管哪些源由**调用名**决定(`SOURCES_BY_PROG`:`cgr`/`chatmgr`/`chatmgr.py` → 全部,`cla` → claude,`cod` → codex),认不出的名字也回落到"全部"。
+- 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived) `-S`(source,可重复或逗号分隔,取值 `claude` / `codex` / `opencode`;用**大写 S** 避开 `-s`)。默认管哪些源由**调用名**决定(`SOURCES_BY_PROG`:`cgr`/`chatmgr`/`chatmgr.py` → 全部,`cla` → claude,`cod` → codex,`opc` → opencode),认不出的名字也回落到"全部"。
 - **多源时 `list` 按源分段**,段标题写明来源与条数(段序 = 选中源的顺序,所以 `-S codex,claude` 能把 Codex 放前面),段内各自按时间倒序。**不按时间全局穿插** —— 分段显示 + 全局时间序会让序号跳号(1,3,5… 然后 2,4,6…),看着像坏了。`pick` 的行首、`search` 的 meta 前缀仍逐行标来源(fzf 里没法分段)。这些都只在**当前列出的会话真的横跨多个源**时出现(按内容判断,不按选了哪些源),单源输出与以前逐字节一致。
 - `rm` 的 `refs` 可为空:此时按 `-p` 的筛选批量删;`refs` 与 `-p` 都不给则报错 —— 绝不误删全部。
 - `search` **默认忽略大小写**,`-c` 才区分;命中关键词高亮。搜索**同时搜标题**(标题不在 `search_units()` 里,得单独对 `s.title` 匹配);结果分**【标题命中】/【内容命中】**两组,内容命中标明所属标题。每个会话默认只展开 `--max-hits`(默认 5)处,`--max-hits 0` 或 `--grep` = 不限。`--grep` 每行前缀标题;`--pick` 把命中的会话送进 `run_picker()`;`--json` 为 `{query, title_matches, content_matches}`;命中来源标签经 `KIND_LABEL` 映射成中文(`user`→你、`assistant`→Claude、`tool`→工具、`thinking`→思考、`tool_result`→工具返回),`--json` 里仍是原始 kind。

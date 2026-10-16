@@ -42,18 +42,18 @@ cgr list -S claude    # 不换命令名,用 -S 收窄(可逗号分隔 / 重复)
 
 ## 三、接入一个新源必须回答的问题
 
-| # | 问题 | Claude Code | Codex |
-|---|---|---|---|
-| 1 | 数据在哪 | `~/.claude/projects/<项目>/<id>.jsonl` | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` |
-| 2 | 一次对话怎么认出是"一个"会话 | 一个文件 = 一个会话 | **一个 `session_id`,可能横跨多个文件**(靠 `session_meta.payload.session_id` 粘合) |
-| 3 | 哪些是**我的提问** | `type=user` 且过 `_user_text()` | `item_completed` 里 `item.type=="UserMessage"` 的 item |
-| 4 | 回复 / 工具调用 / 噪音 | `assistant` 的 `text`/`tool_use`/`thinking` | `AgentMessage` / `CommandExecution`…/ `Reasoning` |
-| 5 | **标题**从哪来 | 会话内追加的 `custom-title` 记录 | `state_<N>.sqlite` 的 `threads.name`(**真身**);`session_index.jsonl` 是覆盖更全的镜像,当兜底 |
-| 6 | **token** 从哪来 | `message.usage.*`(input **不含** cache) | 独立的 `token_usage_record` 行(input_tokens **含** cache,要减掉) |
-| 7 | **项目**(cwd)从哪来 | 记录的 `cwd`(带尾随空格,要 strip) | `session_meta.payload.cwd`(可能是 Windows 路径) |
-| 8 | **时间戳** | 记录里的 `timestamp` | 记录顶层的 `timestamp`(全部记录都有) |
-| 9 | 该排除什么 | `subagents/` 是**另一个目录**,天然不扫 | 靠 `thread_source == "user"` 过滤掉 `guardian_review` 子线程 |
-| 10 | 归档 / 删除 / 续聊 / 改名 | 我们自己的 `~/claude-archive`;`claude --resume`;追加 `custom-title` | **它自带**:`codex archive` / `delete` / `resume`;改名要写它的状态库 |
+| # | 问题 | Claude Code | Codex | OpenCode |
+|---|---|---|---|---|
+| 1 | 数据在哪 | `~/.claude/projects/<项目>/<id>.jsonl` | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` | `<data>/opencode.db`(SQLite,一个库装所有会话) |
+| 2 | 一次对话怎么认出是"一个"会话 | 一个文件 = 一个会话 | **一个 `session_id`,可能横跨多个文件**(靠 `session_meta.payload.session_id` 粘合) | `session_v2` 一行 |
+| 3 | 哪些是**我的提问** | `type=user` 且过 `_user_text()` | `item_completed` 里 `item.type=="UserMessage"` 的 item | `session_message.type='user'` 的 `data.text` |
+| 4 | 回复 / 工具调用 / 噪音 | `assistant` 的 `text`/`tool_use`/`thinking` | `AgentMessage` / `CommandExecution`…/ `Reasoning` | `content[].type` = `text` / `tool` / `reasoning` |
+| 5 | **标题**从哪来 | 会话内追加的 `custom-title` 记录 | `state_<N>.sqlite` 的 `threads.name`(**真身**);`session_index.jsonl` 是覆盖更全的镜像,当兜底 | `session_v2.title`(**可能为空** → 回退首句) |
+| 6 | **token** 从哪来 | `message.usage.*`(input **不含** cache) | 独立的 `token_usage_record` 行(input_tokens **含** cache,要减掉) | `session_message.data.tokens`(input **不含** cache,直接用) |
+| 7 | **项目**(cwd)从哪来 | 记录的 `cwd`(带尾随空格,要 strip) | `session_meta.payload.cwd`(可能是 Windows 路径) | `session_v2.directory` |
+| 8 | **时间戳** | 记录里的 `timestamp` | 记录顶层的 `timestamp`(全部记录都有) | `time_created` / `time_updated`(毫秒 epoch) |
+| 9 | 该排除什么 | `subagents/` 是**另一个目录**,天然不扫 | 靠 `thread_source == "user"` 过滤掉 `guardian_review` 子线程 | **暂不过滤**(`parent_id` 含义未验,没有证据就别藏会话) |
+| 10 | 归档 / 删除 / 续聊 / 改名 | 我们自己的 `~/claude-archive`;`claude --resume`;追加 `custom-title` | **它自带**:`codex archive` / `delete` / `resume`;改名要写它的状态库 | CLI:`session delete` / `export`;`opencode --session`;改名写 `session_v2.title` |
 
 ## 四、多源之后要重新定义的产品语义
 
@@ -116,31 +116,44 @@ cgr list -S claude    # 不换命令名,用 -S 收窄(可逗号分隔 / 重复)
     判断"空壳"要用**我们的发现逻辑**(能不能列出来),不能只看文件在不在:一个会话可能只剩 `guardian_review` 的子线程文件,文件在、会话却已经不算存在。
     ⚠️ **不论改状态库还是桌面库,侧边栏都有内存缓存** —— 要重启 Codex 应用才看得见。
 
-### OpenCode(已勘查,**暂无法实现:本机还没有任何会话**)
+### OpenCode(已实现,2026-10-16)
 
-> 2026-10-16 勘查。结论:**存储位置和结构都摸清了,但一条会话都没有,没东西可逆推。**
-
-- 二进制 `/opt/homebrew/bin/opencode`,**v2.0.28**。架构变了:v2 是**后台服务**(`127.0.0.1:<port>` + 密码,见 `~/.local/state/opencode/service.json`),CLI/TUI 只是客户端。
-- **数据是 SQLite,不是文件树**:`opencode debug paths` 自己报 `db = ~/.local/share/opencode/opencode.db`(本机 6.3MB + 6.7MB WAL,50 个 migration)。~~之前以为是一堆小 JSON 文件 —— 那是 v1 的做法,已经不适用。~~
-- 关键表(实测 schema):
+- 二进制 `/opt/homebrew/bin/opencode`,实测 **v2.0.28 ~ 2.0.30**。**v2 是服务架构**:后台跑一个本地 HTTP 服务(`127.0.0.1:<port>` + 密码,见 `~/.local/state/opencode/service.json`),CLI/TUI 只是客户端。
+- **数据是一个 SQLite**,不是文件树:`opencode debug paths` 自己报 `data = ~/.local/share/opencode`,`db = <data>/opencode.db`(认 `$XDG_DATA_HOME`)。~~v1 那套"一堆小 JSON 文件"已经不适用。~~
+- 关键表(**一张表一个会话、一张表一条消息**,本机实测 schema):
 
   | 表 | 字段 |
   |---|---|
-  | `session_v2` | `id` / `project_id` / `parent_id` / `directory` / `path` / **`title`** / `model` / `agent` / **`time_created`·`time_updated`** / `tokens_input`·`tokens_output`·`tokens_reasoning`·`tokens_cache_read`·`tokens_cache_write` / `time_archived` |
+  | `session_v2` | `id` / `project_id` / `parent_id` / `fork_session_id` / `directory` / `title` / `model` / `agent` / `time_created`·`time_updated` / `time_archived` / `tokens_input`·`tokens_output`·`tokens_reasoning`·`tokens_cache_read`·`tokens_cache_write` |
   | `session_message` | `id` / `session_id` / **`type`** / **`seq`** / `time_created` / `data`(JSON) |
   | `project` | `worktree`(项目目录)/ `vcs` / `name` / `time_active` |
-  | `worktree` | `project_id` / `directory` |
 
-  → 看着**比 Claude / Codex 都好读**:标题是真列、token 是五个现成的列(正好对上我们的五类)、`order by seq` 就能定序、`directory` 就是项目。**但 `data` 里各类 `type` 长什么样、`tokens_input` 含不含缓存,都还不知道。**
-- **会话是"按项目"组织的**(`session list` 是在**当前目录**下列),所以"列出全部"要么遍历 `project` 表、要么遍历 `session_v2` 全表。
-- 它还自带 CLI 接口(不一定要自己解析库):`session list` / **`session export <id>`(导出成 JSON)** / `session delete` / `import` / `debug paths` / `api`。
-- **堵点:本机 `session_v2` / `session_message` 都是 0 行。** 日志显示到今天为止只跑过 `--version` / `--help` / `debug paths` / `session list`;库是 `session list` 触发服务 bootstrap 时建的。
-- **下一步:在 OpenCode 里真跑一次对话**,然后重新勘查 `data` 的结构就能照着写 `Source` 实现。**不要凭 schema 猜 `data` 的格式** —— Codex 那几个坑(含缓存的 input_tokens、子线程)全靠真数据才踩出来。
+- **消息类型**(实测):`user` / `assistant` / `idle` / `model-switched` —— **后两种跳过**。
+
+  | type | `data` |
+  |---|---|
+  | `user` | `{time:{created}, text, files, agents}` |
+  | `assistant` | `{time:{created,streamed,completed}, agent, model, content[], finish, tokens:{input,output,reasoning,cache:{read,write}}}` |
+  | `idle` | `{time, outcome}`(succeeded / failed) |
+  | `model-switched` | `{time, model, previous}` |
+
+- **`assistant.content[]` 的 part**(实测):
+  `{"type":"text","text":…}` / `{"type":"reasoning","text":…}` /
+  `{"type":"tool","name":…,"state":{"input":{…},"content":[{"type":"text","text":…}]}}`
+  —— tool 的 `state.content` 就是"工具返回",和 Claude 的 `tool_use` / `tool_result` 一一对应。
+
+- **token 口径:`input` 不含缓存**(和 Claude 一样,不是 Codex 那种)。**这是对账对的,不是猜的** —— 拿它自己的 `opencode stats` 比:它报 **29k**,正好 = `input 14263 + output 1275 + reasoning 454 + cache_read 13056`(29048);若 `input` 含缓存,那个数会明显更大。早先一次 5.8k 也对上过,两次独立验证。
+- **`title` 可能是空的**(实测:失败的那次会话没有标题),用首句提问兜底。**失败 / 没产出的会话一堆列都是 0** —— `has_usage=False`,`list` 显示 `—`,别当成"0 用量"。
+- **库里没有"单会话字节数"**,`size` 取该会话所有 `session_message.data` 的字节数之和。
+- **`parent_id` / `fork_session_id` 含义未验**(实测全是 NULL),所以**不做过滤** —— 宁可能多列出来,也别把真会话藏了。Codex 那种"排除子线程"的规则在这里没有证据,不照搬。
+- **写操作走它的 CLI**:`session delete`(无交互确认参数)/ `session export`(JSON;`--sanitize` 可脱敏)/ `session list` / `import` / `debug paths` / `api`。**没有改名命令**,所以 `opc rename` 直接 `UPDATE session_v2.title` —— **应用认不认没验过**(没有样本可对照),认不动就退回"自己的覆盖层"。
 
 ## 六、未决 / 待验
 
 - **续聊没实跑过**:`codex resume <id>` 命令确认存在、按 id 调用不会歧义,但它一跑就会接管终端开 TUI,没在真实会话上试过。风险低(纯按 id),但如实记一笔。
 - **写状态库有被覆盖的可能**:Codex 应用正开着,它可能在内存里缓存着会话元数据、下次更新时把我们改的 `name` 覆盖回去。实测改名后立刻用 `codex archive <新名字>` 是认的,但**长期会不会被冲掉没有验证**。真被冲掉的话,退路是改成"我们自己的覆盖层"(`~/.local/share/cgr/codex-titles.json`,绝不碰 Codex 数据,代价是只有 `cod` 看得到新名字)。
 - **`state_<N>.sqlite` 的版本号会涨**(现在是 `state_5`)。代码按"取最大的 N"来找,不受影响;但 schema 若是大变,得重新勘查。
-- **OpenCode**:存储已摸清(SQLite,`opencode.db`,`session_v2` / `session_message`),但**本机还没有任何会话**,`data` 的结构无从逆推。见第五节 —— **先在 OpenCode 里真跑一次对话**再动手。
+- **OpenCode**:**已实现**(`opc`)。存储、消息结构、token 口径都实测清楚了,见第五节。
+- **OpenCode 的 `prompts`**:它有 `~/.local/state/opencode/prompt-history.jsonl`,但我们的 `prompts` 还只读 Claude 那套,没接。
+- **`opc rename` 应用认不认**:没验过(它没有改名命令,我们是直接 `UPDATE session_v2.title`)。
 - **Codex 的 `prompts`**:索引里有已删会话的标题,但没有完整提问流水,形态和 Claude 的 `history.jsonl` 不同,要单独设计。

@@ -1,47 +1,49 @@
 # 聊天记录命令手册
 
-`cgr`(=`chatmgr`)—— 管理本机 agent 聊天记录的命令行工具。纯 Python 标准库,无依赖。管两个数据源:Claude Code 和 Codex。
+`cgr`(=`chatmgr` / `cla` / `cod` / `opc`)—— 管理本机 agent 聊天记录的命令行工具。纯 Python 标准库,无依赖。管三个数据源:Claude Code、Codex、OpenCode。
 
-> **本文档统一用 `cgr` 举例。** `cla`(只看 Claude)、`cod`(只看 Codex)敲法**完全一样**,只是看到的数据不同。凡是两边行为有差异的地方,各节里都用 **「Codex 差异」** 标出来。
+> **本文档统一用 `cgr` 举例。** `cla`(只看 Claude)、`cod`(只看 Codex)、`opc`(只看 OpenCode)敲法**完全一样**,只是看到的数据不同。凡是行为有差异的地方,各节里都用 **「Codex 差异」/「OpenCode 差异」** 标出来。
 
 ## 安装 / 运行
 
 ```bash
-cgr <命令>                          # ~/.local/bin/cgr 已软链到仓库内 chatmgr.py;cgr = 全部源混排
+cgr <命令>                          # ~/.local/bin/cgr 已软链到仓库内 chatmgr.py;cgr = 全部源,分段列出
 cla <命令>                          # 只看 Claude Code
 cod <命令>                          # 只看 Codex
+opc <命令>                          # 只看 OpenCode
 python3 /Users/sonia/01_AI/001_code/tools/ChatManager/chatmgr.py <命令>   # 或直接跑
 cgr -h                              # 顶层帮助
 cgr <命令> -h                        # 某子命令的全部参数
 ```
 
-`cgr` / `chatmgr` / `cla` / `cod` 是同一个文件的四个软链,四名字都能用 —— **靠命令名决定默认看哪些源**。想加新 agent,以后照这个再建一张软链即可。
+`cgr` / `chatmgr` / `cla` / `cod` / `opc` 是同一个文件的五个软链,五个名字都能用 —— **靠命令名决定默认看哪些源**。想加新 agent,以后照这个再建一张软链即可。
 
-## 三个命令:看全部 / 只看某一个
+## 四个命令:看全部 / 只看某一个
 
 | 命令 | 看到哪些 | 记录在哪 |
 |---|---|---|
-| `cgr`(=`chatmgr`) | **全部**,Claude 和 Codex 按时间混排 | 下面两处都读 |
+| `cgr`(=`chatmgr`) | **全部**,各源**分段**列出 | 下面三处都读 |
 | `cla` | 只看 Claude Code | `~/.claude/projects/<项目>/<会话id>.jsonl` |
 | `cod` | 只看 Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` |
+| `opc` | 只看 OpenCode | `~/.local/share/opencode/opencode.db`(SQLite) |
 
-- **三个命令的子命令、参数、指认方式完全一样**。本文档里所有的 `cgr xxx` 都适用于 `cla xxx` / `cod xxx`。
-- 不想换命令名,也可以用 `-S` 收窄:`cgr list -S codex`、`cgr list -S claude`(可逗号分隔:`-S claude,codex`)。
-- **序号只在你当前看到的那个列表里有意义**:`cgr 3` 是它列表的第 3 条(多源分段后,Claude 段在前),`cla 3` 是 Claude 列表的第 3 条。
-- **多源时列表按源分段**(Claude 一段、Codex 一段),段内各自按时间倒序;段序由源的选择顺序决定,`-S codex,claude` 就能反过来。只看单源时不分段。
+- **四个命令的子命令、参数、指认方式完全一样**。本文档里所有的 `cgr xxx` 都适用于 `cla xxx` / `cod xxx` / `opc xxx`。
+- 不想换命令名,也可以用 `-S` 收窄:`cgr list -S codex`、`cgr list -S claude,opencode`(可逗号分隔)。
+- **序号只在你当前看到的那个列表里有意义**:多源分段后,Claude 段在前;`cgr 3` 是它列表的第 3 条,`opc 3` 是 OpenCode 列表的第 3 条。
+- **多源时列表按源分段**(每段一个来源),段内各自按时间倒序;段序由源的选择顺序决定,`-S codex,claude` 就能反过来。只看单源时不分段。
 
-**两边行为不同的地方:**
+**各源行为不同的地方:**
 
-| | Claude | Codex |
-|---|---|---|
-| 备份 / 归档 | 我们自己的 `~/claude-archive`(`purge` 清它) | **用 Codex 自带的归档**:`rm` 的"删并备份"= `codex archive`,取回用 `codex unarchive <id>`;`purge` 对 Codex 是空操作 |
-| 续聊 | `claude --resume <id>` | `codex resume <id>` |
-| 改名 | 写回会话 jsonl 的 `custom-title` | 改 Codex 状态库的 `threads.name`(改完 Codex 里也看得见) |
-| `prompts` | 有(读 `~/.claude/history.jsonl`) | 没有对应物,会提示一句 |
-| `dedupe` | 有用(同 id 可能多份) | 无需处理(已按 `session_id` 归组) |
-| token 列 | 一直有 | 旧版 Codex 不记 token,这类会话显示 `—` |
+| | Claude | Codex | OpenCode |
+|---|---|---|---|
+| 备份 / 归档 | 我们自己的 `~/claude-archive`(`purge` 清它) | **用 Codex 自带的归档**:`rm` 的"删并备份"= `codex archive`,取回用 `codex unarchive <id>`;`purge` 是空操作 | 它**没有归档概念**:`rm` 的"删并备份"= `opencode session export` 存成 JSON 到 `<归档>/_opencode/`(能用 `opencode session import` 装回去);`purge` 不管它 |
+| 续聊 | `claude --resume <id>` | `codex resume <id>` | `opencode --session <id>` |
+| 改名 | 写回会话 jsonl 的 `custom-title` | 改 Codex 状态库的 `threads.name`(Codex 里也看得见) | 改 `session_v2.title`(**认不认未验**) |
+| `prompts` | 有(读 `~/.claude/history.jsonl`) | 没有对应物,会提示一句 | 没有对应物,会提示一句 |
+| `dedupe` | 有用(同 id 可能多份) | 无需处理(已按 `session_id` 归组) | 无需处理(一张表一个会话) |
+| token 列 | 一直有 | 旧版不记 token 的显示 `—` | 失败 / 没产出的显示 `—` |
 
-Codex 的**删除 / 改名 / 续聊需要一个 `codex` 命令**(可能装在 PATH 上,也可能藏在 ChatGPT.app 包里)。找不到时**只读功能照常能用**,写操作会明确提示。
+Codex 和 OpenCode 的**删除 / 改名 / 续聊都需要各自那个命令**(`codex` / `opencode`)。找不到时**只读功能照常能用**,写操作会明确提示。
 
 ## 怎么读这份文档
 
@@ -53,23 +55,23 @@ Codex 的**删除 / 改名 / 续聊需要一个 `codex` 命令**(可能装在 PA
 
 ## 命令一览
 
-三个入口见上一节。**子命令**如下(用 `cgr` 举例 —— 换成 `cla` / `cod` 完全同理):
+四个入口见上一节。**子命令**如下(用 `cgr` 举例 —— 换成 `cla` / `cod` / `opc` 完全同理):
 
-| 完整命令 | 简写 | 作用 | 支持 Codex? |
-|---|---|---|---|
-| `cgr list` | `cgr` | 列出会话 | ✓ |
-| `cgr search <词>` | `cgr <词>` | 搜索内容 | ✓ |
-| `cgr show <ref>` | `cgr <序号>` | 阅读一个会话 | ✓ |
-| `cgr pick [词]` | `cgr f` | fzf 交互选择(可加 `词` 初筛) | ✓ |
-| `cgr export <ref>` | — | 导出 md / txt / json | ✓ |
-| `cgr stats` | — | 用量统计 | ✓(旧版 Codex 不记 token,显示 `—`) |
-| `cgr rm <ref...>` | — | 删除会话(默认预览) | ✓(走 Codex 自带的 `archive` / `delete`) |
-| `cgr rename <ref> <新标题>` | — | 给会话改名 | ✓(写 Codex 状态库,改完 Codex 里也看得见) |
-| `cgr prompts [词]` | — | **你自己的提问流水**(含 jsonl 已删的会话) | ✗ 只有 Claude 有;`cod prompts` 会提示一句 |
-| `cgr purge` | — | 清除备份(默认预览) | ✗ Codex 的归档由它自己管;`cod purge` 是空操作 |
-| `cgr dedupe` | — | 合并重复会话(同 id 多份时保留最新,其余移到归档) | ✗ Codex 无需处理(已按 `session_id` 归组) |
+| 完整命令 | 简写 | 作用 | Codex? | OpenCode? |
+|---|---|---|---|---|
+| `cgr list` | `cgr` | 列出会话 | ✓ | ✓ |
+| `cgr search <词>` | `cgr <词>` | 搜索内容 | ✓ | ✓ |
+| `cgr show <ref>` | `cgr <序号>` | 阅读一个会话 | ✓ | ✓ |
+| `cgr pick [词]` | `cgr f` | fzf 交互选择(可加 `词` 初筛) | ✓ | ✓ |
+| `cgr export <ref>` | — | 导出 md / txt / json | ✓ | ✓ |
+| `cgr stats` | — | 用量统计 | ✓(旧版不记 token 的显示 `—`) | ✓(失败/没产出的显示 `—`) |
+| `cgr rm <ref...>` | — | 删除会话(默认预览) | ✓(走它自带的 `archive` / `delete`) | ✓(走 `session delete`;备份是导出成 JSON) |
+| `cgr rename <ref> <新标题>` | — | 给会话改名 | ✓(写它的状态库,Codex 里也看得见) | ✓(写 `session_v2.title`;**认不认未验**) |
+| `cgr prompts [词]` | — | **你自己的提问流水**(含 jsonl 已删的会话) | ✗ 只有 Claude 有 | ✗ 只有 Claude 有 |
+| `cgr purge` | — | 清除备份(默认预览) | ✗ 归档由它自己管 | ✗ 备份是导出文件,自己清 |
+| `cgr dedupe` | — | 合并重复会话(同 id 多份时保留最新,其余移到归档) | ✗ 已按 `session_id` 归组,无需处理 | ✗ 一张表一个会话,不会有重复 |
 
-**裸参数分派**:`cgr`(无参)=列表;`cgr 3`(纯数字)=打开第 3 个;`cgr 9852ae3a`(像 id 前缀)=打开该会话;`cgr 词`(其他词)=搜索「词」。`cla` / `cod` 同理,只是序号基准换成它们各自看到的列表。
+**裸参数分派**:`cgr`(无参)=列表;`cgr 3`(纯数字)=打开第 3 个;`cgr 9852ae3a`(像 id 前缀)=打开该会话;`cgr 词`(其他词)=搜索「词」。`cla` / `cod` / `opc` 同理,只是序号基准换成它们各自看到的列表。
 
 **`-S` 可以顶替命令名**:`cgr list -S claude` ≡ `cla list`。可逗号分隔或重复:`-S claude,codex`。
 
@@ -304,6 +306,8 @@ cgr show <ref> [--full] [--pager] [--resume] [--json] [全局参数]
 
 > **Codex 差异**:续聊走 `codex resume <id>`(不是 `claude --resume`);回复的标签是 `[Codex]`;旧版 Codex 不记 token 的会话,头部显示 `token: 未记录`。
 >
+> **OpenCode 差异**:续聊走 `opencode --session <id>`;回复的标签是 `[OpenCode]`。
+>
 > **混排时**:`show` 的每段回复都标着它自己的源(`[Claude]` / `[Codex]`)。
 
 **完整 → 简写**
@@ -469,6 +473,8 @@ cgr rm <ref...> [--force] [全局参数]
 >
 > 另外:**`codex delete` 自己不清 Codex 侧边栏的会话目录**(那是桌面应用自己的库 `codex-dev.db`),所以光删会话的话,侧边栏会一直挂着一个点不开的空壳。**我们已经替你补了这一刀** —— `rm` 直删时会顺手把那条目录记录也清掉。改完**要重启 Codex 应用**才看得见(侧边栏缓存在内存里)。
 >
+> **OpenCode 差异**:直删 = `opencode session delete <id>`(它**没有**交互确认参数,和 codex 不同);`n`(删并备份)= 先 `opencode session export` 存成 JSON 到 `<归档>/_opencode/` 再删 —— **这份能用 `opencode session import` 装回去**。注意 `purge` 只扫 Claude 那套 `<归档>/<项目>/*.jsonl`,**管不到 `_opencode/`**,要清自己 rm。
+>
 > 前提是本机能找到 `codex` 命令(路径上或 ChatGPT.app 包里)。找不到时只读功能照常,`rm` 会明确报错、不会删一半。
 
 **Codex 的归档不是"我们存的一份备份",是 Codex 自己的状态**,所以它和 Claude 那套 `~/claude-archive` 互不相干、各管各的。
@@ -556,6 +562,8 @@ cgr rename <ref> [新标题] [全局参数]     # 不给标题则交互式提问
 > **Codex 差异**:Claude 是往会话 jsonl 追加一条 `custom-title` 记录(与 Claude Code 自身改名同格式);**Codex 是改它状态库 `state_<N>.sqlite` 的 `threads.name`** —— 因为实测 Codex 只认那里,写索引文件它认不到。改完 **Codex 桌面版里也看得见新标题**。
 >
 > 刻意**不改 `updated_at`**:改个名字不该把会话顶到 Codex 侧边栏最前面。
+>
+> **OpenCode 差异**:它**没有改名命令**,我们是直接 `UPDATE session_v2.title`。**应用认不认还没验证过**(这台机器上 OpenCode 才刚用起来,没有样本可对照)。
 
 不给新标题时会**提示输入新标题** —— `cgr f` 里按 `Ctrl-E` 走的就是这条。
 
