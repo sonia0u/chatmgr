@@ -108,6 +108,7 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 - **真人输入极少**:user 记录里绝大多数是 `tool_result`。判定逻辑见 `_user_text()` —— content 为字符串、非 `isMeta`、且不以 `<` / `system-reminder` / `Caveat:` 开头。
 - **噪音**:`attachment` 记录里大量是 `total_tokens_reminder`;assistant 记录里有 `thinking`。搜索默认排除工具返回和 thinking(`--all` 才纳入)。
 - **token** 从 assistant 的 `message.usage` 累加五类:input / output / cache_read / cache_creation / thinking。`list` 显示的 `tok = input+output`,**不含 cache**(cache_read 是重复上下文,计进去会撑爆数字)。`show` 头部和 `stats` 总览**只列非 0 的类型**(代理不报 cache_creation / thinking 时它们恒为 0,列出来像坏了);`stats` 里当 cache_read 大于 input+output 时再附一句说明它是重复回读。
+- **标题 / 项目里可能夹带控制字符,渲染前必须剔掉**。实测真有一条 Codex 标题以 `\x08`(退格)开头:`\b` 被终端当指令,会把光标退一格、**吃掉前面那个空格**(`Codex 这是…` → `Codex这是…`),整列跟着歪;`\x1b` 更糟 —— 那是转义序列的开头,等于让聊天数据往终端注入转义。所以 `flat()` 会剔掉非空白控制字符(`\t\n\r` 等照旧压成空格),`dwidth()` 也不再把它们算作占列。
 - **jsonl 是 Claude Code 内部格式,无契约**,随版本变化。所有解析一律逐行 `try/except`、未知 `type` 忽略(见 `iter_records`)。不要硬编码"必需"字段。
 - **同一会话 id 可能落在多个项目文件夹**(在不同 cwd 下 resume 过,或项目文件夹被复制),两份内容会不一致。`SessionStore._discover()` 按 `(source, id)` 去重:保留最后活动最新、且优先活会话的那一份;被丢弃的份数记在 `store.duplicates`,由 `list` 提示。
 

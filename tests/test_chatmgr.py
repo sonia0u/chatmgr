@@ -140,6 +140,17 @@ class ParseTests(unittest.TestCase):
     def test_parse_ts_garbage(self):
         self.assertIsNone(chatmgr.parse_ts("not a time"))
 
+    def test_flat_strips_control_chars(self):
+        """标题/项目里混进 \\b 会让终端退格、吃掉前一个字符,把整列挤歪;\\x1b 更糟(转义序列)。"""
+        self.assertEqual(chatmgr.flat("a\x08b"), "ab")
+        self.assertEqual(chatmgr.flat("a\x1b[31mb"), "a[31mb")
+        self.assertEqual(chatmgr.flat("a\tb\nc"), "a b c")  # 空白照旧压成单个空格
+
+    def test_dwidth_counts_control_chars_as_zero(self):
+        self.assertEqual(chatmgr.dwidth("a\x08b"), 2)
+        self.assertEqual(chatmgr.dwidth("中文"), 4)
+        self.assertEqual(chatmgr.dwidth("你\x08好"), 4)
+
     def test_parse_when_relative_days(self):
         delta = dt.datetime.now() - chatmgr.parse_when("7d")
         self.assertLess(abs(delta.total_seconds() - 7 * 86400), 5)

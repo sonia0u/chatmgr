@@ -180,8 +180,17 @@ ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
 def dwidth(s: str) -> int:
-    """显示宽度:CJK 全角算 2。先剥掉 ANSI 颜色码,否则对齐会错。"""
-    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in ANSI_RE.sub("", s))
+    """显示宽度:CJK 全角算 2。先剥掉 ANSI 颜色码,否则对齐会错。
+
+    控制字符(\b / \x1b 之类)不占列 —— 终端会拿它们当指令(退格、转义序列开头),
+    当成 1 列宽算就会和实际渲染对不上,表格整列错位。
+    """
+    total = 0
+    for c in ANSI_RE.sub("", s):
+        if c < " " or c == "\x7f":
+            continue
+        total += 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+    return total
 
 
 def pad(s: str, width: int) -> str:
@@ -201,12 +210,20 @@ def truncate(s: str, width: int) -> str:
     return out + "…"
 
 
+#: 非空白控制字符。\t \n \r 等留给 flat() 压成空格,其余(\b \x1b …)一律剔掉
+_CTRL_RE = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
+
+
 def flat(s) -> str:
     """把任意空白(含换行、制表符)压成单个空格。
 
     标题/项目里若混入换行,会撑破表格行、也会把 fzf 的一条记录拆成两条。
+
+    顺便剔掉控制字符:这些字段来自聊天数据(可能是手打、粘贴、或模型给的),
+    **一个 \\b 就会让终端退格、吃掉前一个字符**,把整列挤歪;`\\x1b` 更糟,那是转义
+    序列的开头,轻则乱色。实测真有过一条标题以 \\x08 开头。
     """
-    return " ".join(str(s).split())
+    return " ".join(_CTRL_RE.sub("", str(s)).split())
 
 
 def basename_any(p) -> str:
