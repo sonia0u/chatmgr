@@ -116,18 +116,31 @@ cgr list -S claude    # 不换命令名,用 -S 收窄(可逗号分隔 / 重复)
     判断"空壳"要用**我们的发现逻辑**(能不能列出来),不能只看文件在不在:一个会话可能只剩 `guardian_review` 的子线程文件,文件在、会话却已经不算存在。
     ⚠️ **不论改状态库还是桌面库,侧边栏都有内存缓存** —— 要重启 Codex 应用才看得见。
 
-### OpenCode(未实现,**会话正文存哪仍未知**)
+### OpenCode(已勘查,**暂无法实现:本机还没有任何会话**)
 
-- 提问流水:`~/.local/state/opencode/prompt-history.jsonl`,每行 `{"text": …, "files": [], "agents": [], "skills": [], "pasted": [], "mode": "normal"}`
-- 配置:`~/.config/opencode/`(只有 `cli.json` / `service.json` / `skills`,**没有会话数据**)
-- 二进制:`/opt/homebrew/bin/opencode`(Homebrew 的 `opencode-v2`)
-- **没找到会话正文存哪**:`~/.local/share/opencode` 不存在。已知线索:上游 `sst/opencode` 历来把一次会话拆成一堆小 JSON 文件存(`storage/session/` + 每条消息、每个 part 各一个文件),**不是** jsonl、也不在单个文件里。若真是这样,第三节第 2 条(怎么认出"一个"会话)的答案会变成"要跨很多文件拼起来"。
-- **结论:等实际用 OpenCode 跑出会话之后再勘查**,别凭猜测写解析器。
+> 2026-10-16 勘查。结论:**存储位置和结构都摸清了,但一条会话都没有,没东西可逆推。**
+
+- 二进制 `/opt/homebrew/bin/opencode`,**v2.0.28**。架构变了:v2 是**后台服务**(`127.0.0.1:<port>` + 密码,见 `~/.local/state/opencode/service.json`),CLI/TUI 只是客户端。
+- **数据是 SQLite,不是文件树**:`opencode debug paths` 自己报 `db = ~/.local/share/opencode/opencode.db`(本机 6.3MB + 6.7MB WAL,50 个 migration)。~~之前以为是一堆小 JSON 文件 —— 那是 v1 的做法,已经不适用。~~
+- 关键表(实测 schema):
+
+  | 表 | 字段 |
+  |---|---|
+  | `session_v2` | `id` / `project_id` / `parent_id` / `directory` / `path` / **`title`** / `model` / `agent` / **`time_created`·`time_updated`** / `tokens_input`·`tokens_output`·`tokens_reasoning`·`tokens_cache_read`·`tokens_cache_write` / `time_archived` |
+  | `session_message` | `id` / `session_id` / **`type`** / **`seq`** / `time_created` / `data`(JSON) |
+  | `project` | `worktree`(项目目录)/ `vcs` / `name` / `time_active` |
+  | `worktree` | `project_id` / `directory` |
+
+  → 看着**比 Claude / Codex 都好读**:标题是真列、token 是五个现成的列(正好对上我们的五类)、`order by seq` 就能定序、`directory` 就是项目。**但 `data` 里各类 `type` 长什么样、`tokens_input` 含不含缓存,都还不知道。**
+- **会话是"按项目"组织的**(`session list` 是在**当前目录**下列),所以"列出全部"要么遍历 `project` 表、要么遍历 `session_v2` 全表。
+- 它还自带 CLI 接口(不一定要自己解析库):`session list` / **`session export <id>`(导出成 JSON)** / `session delete` / `import` / `debug paths` / `api`。
+- **堵点:本机 `session_v2` / `session_message` 都是 0 行。** 日志显示到今天为止只跑过 `--version` / `--help` / `debug paths` / `session list`;库是 `session list` 触发服务 bootstrap 时建的。
+- **下一步:在 OpenCode 里真跑一次对话**,然后重新勘查 `data` 的结构就能照着写 `Source` 实现。**不要凭 schema 猜 `data` 的格式** —— Codex 那几个坑(含缓存的 input_tokens、子线程)全靠真数据才踩出来。
 
 ## 六、未决 / 待验
 
 - **续聊没实跑过**:`codex resume <id>` 命令确认存在、按 id 调用不会歧义,但它一跑就会接管终端开 TUI,没在真实会话上试过。风险低(纯按 id),但如实记一笔。
 - **写状态库有被覆盖的可能**:Codex 应用正开着,它可能在内存里缓存着会话元数据、下次更新时把我们改的 `name` 覆盖回去。实测改名后立刻用 `codex archive <新名字>` 是认的,但**长期会不会被冲掉没有验证**。真被冲掉的话,退路是改成"我们自己的覆盖层"(`~/.local/share/cgr/codex-titles.json`,绝不碰 Codex 数据,代价是只有 `cod` 看得到新名字)。
 - **`state_<N>.sqlite` 的版本号会涨**(现在是 `state_5`)。代码按"取最大的 N"来找,不受影响;但 schema 若是大变,得重新勘查。
-- **OpenCode 等更多源**:见第五节,会话正文存哪仍未知。接入清单见第三节。
+- **OpenCode**:存储已摸清(SQLite,`opencode.db`,`session_v2` / `session_message`),但**本机还没有任何会话**,`data` 的结构无从逆推。见第五节 —— **先在 OpenCode 里真跑一次对话**再动手。
 - **Codex 的 `prompts`**:索引里有已删会话的标题,但没有完整提问流水,形态和 Claude 的 `history.jsonl` 不同,要单独设计。
