@@ -2697,16 +2697,67 @@ def _prog_epilog(prog: str) -> str:
     return "\n".join(lines)
 
 
+def _top_help(prog: str) -> str:
+    """顶层帮助。**自己拼**,因为 argparse 默认那套排不出"最常用的写法"这一段 ——
+    而恰恰是这一段最该放最前面:四个高频操作都能省掉动词(靠 main() 里的裸参数分派)。
+
+    子命令的帮助仍走 argparse 默认排版(`cgr <命令> -h`)。
+    """
+
+    def row(usage: str, what: str, same_as: str = "") -> str:
+        gap = " " * max(1, 18 - dwidth(usage))  # 名字长时也别挤在一起
+        line = "  " + usage + gap + pad(what, 22)
+        return (line + f"(= {same_as})").rstrip() if same_as else line.rstrip()
+
+    return "\n".join([
+        f"usage: {prog} [-h] [全局参数] <命令 / 数字 / 关键词> ...",
+        "",
+        f"管理本机几个 AI 编程 agent 的聊天记录:搜索 / 阅读 / 统计 / 安全删除。",
+        f"某个子命令的完整参数看:{prog} <命令> -h",
+        "",
+        "最常用的四个(都不用敲动词):",
+        row(f"{prog}", "列出会话", f"{prog} list"),
+        row(f"{prog} 3", "打开第 3 个", f"{prog} show 3"),
+        row(f"{prog} 关键词", "跨所有源搜内容", f"{prog} search 关键词"),
+        row(f"{prog} f", "交互浏览 / 删 / 改名", f"{prog} pick"),
+        "",
+        "全部子命令:",
+        "  list     search   prompts   show     pick (f)   export",
+        "  stats    rm       purge     dedupe   rename",
+        "",
+        "全局参数(每个子命令都能加):",
+        "  -p 项目    按项目筛选;可重复或逗号分隔,多个取并集",
+        "  -s WHEN    起始时间:YYYY-MM-DD 或 7d / 2w / 3m",
+        "  -u WHEN    截止时间,同上",
+        "  -l N       最多处理 N 个会话          -j   机器可读输出(JSON)",
+        "  -a         把归档也纳入数据源",
+        f"  -S SRC     选数据源,可逗号分隔或重复:{' / '.join(ALL_SOURCES)}",
+        "  --color / --no-color   强制开 / 关彩色",
+        "",
+        _prog_epilog(prog),
+    ])
+
+
+class _TopParser(argparse.ArgumentParser):
+    """顶层解析器:帮助自己拼(见 _top_help),子命令帮助仍走 argparse。"""
+
+    def format_help(self) -> str:
+        return _top_help(self.prog)
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = _common_parser()
     prog = prog_name()
-    p = argparse.ArgumentParser(
+    p = _TopParser(
         prog=prog,
         description=f"聊天记录管理。不带子命令=列表;{prog} 3=打开第3个;{prog} 关键词=搜索。",
         epilog=_prog_epilog(prog),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = p.add_subparsers(dest="cmd", metavar="<命令/数字/关键词>")
+    # 注意 parser_class:add_subparsers 默认拿父解析器的类,不显式指回默认的话
+    # 子命令也会用 _TopParser,它们的 usage 行就变成顶层那套了(踩过)
+    sub = p.add_subparsers(dest="cmd", metavar="<命令/数字/关键词>",
+                           parser_class=argparse.ArgumentParser)
 
     sp = sub.add_parser("list", aliases=SUBCOMMANDS["list"], parents=[common], help="列出会话")
     sp.set_defaults(func=cmd_list)

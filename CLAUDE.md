@@ -166,6 +166,8 @@ export CHATMGR_OPENCODE_BIN=/tmp/fake/oc-stub.sh  # 桩脚本;置空 = 当作"�
 
 ## 参数与输出约定
 
+- **顶层 `-h` 是自制排版**(`_top_help` + `_TopParser`):因为要把"最常用的四个写法"(`cgr` / `cgr 3` / `cgr 词` / `cgr f`,靠裸参数分派实现)**摆在最前面**,还要把全局参数列出来 —— argparse 默认那套排不出这个。子命令的帮助仍走 argparse 默认排版。
+  ⚠ **改这里的坑**:`add_subparsers()` 默认拿父解析器的类,不显式写 `parser_class=argparse.ArgumentParser` 的话,子命令也会变成 `_TopParser`,它们的 usage 行就变成顶层那套(`usage: cgr list [-h] [全局参数] …`)—— 踩过一次,有测试兜着。
 - `resolve()` 支持三种指认,**所有命令通用**:id 前缀 / 列表序号 / 标题片段。序号的基准是**无筛选**的完整列表(实时计算)。有歧义就报错并列出候选。
 - 子命令别名只保留 `pick`→`f`(常用),其余一律敲全名 —— 集中在模块常量 `SUBCOMMANDS`(其余命令的别名列表为空),`KNOWN_COMMANDS` 供裸参数分派判断。要增删别名改这一处即可。注意别名删掉后,`cgr ls` 这类词会被当成**搜索**(非命令词都走 search)。
 - 全局短选项在所有子命令保持一致:`-p`(project,可重复或逗号分隔,多个取并集) `-s`(since) `-u`(until) `-l`(limit) `-j`(json) `-a`(archived) `-S`(source,可重复或逗号分隔,取值 `claude` / `codex` / `opencode`;用**大写 S** 避开 `-s`)。默认管哪些源由**调用名**决定(`SOURCES_BY_PROG`:`cgr`/`chatmgr`/`chatmgr.py` → 全部,`cla` → claude,`cod` → codex,`opc` → opencode),认不出的名字也回落到"全部"。

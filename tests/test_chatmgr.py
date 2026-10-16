@@ -713,13 +713,42 @@ class CodexTest(BaseTest):
         self.assertIn("1 个会话", self.run_cli("list", "-S", "claude")[1])
 
     def test_help_lists_the_entry_points(self):
-        """`-h` 里必须能看到 cla / cod —— 否则没人知道它们存在。清单是从
+        """`-h` 里必须能看到 cla / cod / opc —— 否则没人知道它们存在。清单是从
         SOURCES_BY_PROG 反推的,以后加新 agent 会自动出现。"""
         out = chatmgr.build_parser().format_help()
         self.assertIn("cla", out)
         self.assertIn("cod", out)
         self.assertIn("Claude", out)
         self.assertIn("-S", out)
+
+    def test_help_shows_the_bare_shorthands(self):
+        """顶层帮助要把"不用敲动词"的四个写法摆在最前面 —— 不然看帮助的人只会去敲全名。
+        断言写成与命令名无关的(测试里 prog 是 `test_chatmgr.py`)。"""
+        out = chatmgr.build_parser().format_help()
+        self.assertIn("最常用的四个", out)
+        self.assertIn("= ", out)
+        self.assertIn("list", out)
+        self.assertIn("show 3", out)
+        self.assertIn("search 关键词", out)
+        self.assertIn("pick", out)
+
+    def test_help_shows_global_options(self):
+        """全局参数必须在顶层帮助里可见 —— 以前只在子命令的 -h 里出现。"""
+        out = chatmgr.build_parser().format_help()
+        for flag in ("-p", "-s", "-u", "-l", "-j", "-a", "-S", "--no-color"):
+            self.assertIn(flag, out)
+
+    def test_subcommand_help_is_untouched(self):
+        """顶层帮助自定义了排版,但子命令的 usage 行不能被带歪(踩过)。"""
+        import io as _io, contextlib as _ctx
+        buf = _io.StringIO()
+        with _ctx.redirect_stdout(buf):
+            try:
+                chatmgr.build_parser().parse_args(["list", "-h"])
+            except SystemExit:
+                pass
+        self.assertIn("usage: ", buf.getvalue())
+        self.assertNotIn("[全局参数] <命令", buf.getvalue().splitlines()[0])
 
     # ---- 命令名决定默认源
 
