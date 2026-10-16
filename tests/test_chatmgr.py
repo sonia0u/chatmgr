@@ -436,6 +436,13 @@ class CodexTest(BaseTest):
         con.execute("create table threads (id text primary key, name text)")
         con.commit()
         con.close()
+        # 桌面应用自己的库:侧边栏那份会话目录。codex delete 不碰它,得我们补一刀
+        (self.codex / "sqlite").mkdir(parents=True, exist_ok=True)
+        self.desktop_db = self.codex / "sqlite" / "codex-dev.db"
+        con = sqlite3.connect(self.desktop_db)
+        con.execute("create table local_thread_catalog (host_id text, thread_id text, display_title text)")
+        con.commit()
+        con.close()
         os.environ["CHATMGR_CODEX_DIR"] = str(self.codex)
         os.environ["CHATMGR_CODEX_BIN"] = str(stub)
 
@@ -449,7 +456,18 @@ class CodexTest(BaseTest):
             with con:
                 con.execute("insert or replace into threads(id, name) values (?,?)", (sid, db_name))
             con.close()
+            con = sqlite3.connect(self.desktop_db)  # 侧边栏目录
+            with con:
+                con.execute("insert into local_thread_catalog(host_id, thread_id, display_title)"
+                            " values ('local', ?, ?)", (sid, db_name or sid))
+            con.close()
         return p
+
+    def in_catalog(self, sid):
+        con = sqlite3.connect(f"file:{self.desktop_db}?mode=ro", uri=True)
+        n = con.execute("select count(*) from local_thread_catalog where thread_id=?", (sid,)).fetchone()[0]
+        con.close()
+        return n
 
     def state_name(self, sid):
         con = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True)
@@ -573,6 +591,20 @@ class CodexTest(BaseTest):
         self.assertEqual(code, 0)
         # 必须带 --force:codex delete 自带交互确认,而我们是子进程没有 TTY
         self.assertEqual(self.called(), ["delete", "--force", "s1"])
+
+    def test_rm_force_also_clears_desktop_catalog(self):
+        """`codex delete` 不清桌面应用的会话目录 —— 不补这一刀,侧边栏会留个点不开的空壳。"""
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        self.assertEqual(self.in_catalog("s1"), 1)
+        code, out = self.run_cli("rm", "s1", "-f", "-S", "codex")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.in_catalog("s1"), 0, "删会话时要把侧边栏目录里的空壳一起清掉")
+
+    def test_archive_keeps_desktop_catalog(self):
+        """归档不是删除,侧边栏那条得留着。"""
+        self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
+        chatmgr.SOURCES["codex"].delete(self.sessions()[0], backup=True)
+        self.assertEqual(self.in_catalog("s1"), 1)
 
     def test_rm_backup_delegates_to_codex_archive(self):
         self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])

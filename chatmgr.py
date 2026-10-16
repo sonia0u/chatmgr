@@ -113,6 +113,16 @@ def codex_state_db() -> Path | None:
     return best[1] if best else None
 
 
+def codex_desktop_db() -> Path | None:
+    """Codex **桌面应用**自己的库(`sqlite/codex-dev.db`)。
+
+    侧边栏那份会话目录就在里面(`local_thread_catalog`)—— `codex delete` 不碰它,
+    所以只删会话的话,侧边栏会一直挂着一个点不开的空壳。
+    """
+    p = codex_dir() / "sqlite" / "codex-dev.db"
+    return p if p.is_file() else None
+
+
 def codex_bin() -> str | None:
     """Codex CLI 的位置。找不到返回 None(读相关功能照常,只有删/改名/续聊不可用)。
 
@@ -998,6 +1008,43 @@ def _codex_build(sid: str, files: tuple[Path, ...], archived: bool, cwd: str, ti
     return s
 
 
+#: 桌面应用库里"按会话 id 挂行"的表。实测删一条会话时只有 local_thread_catalog
+#: 有行,其余几个当时是空的 —— 一起清是防它们以后有了数据。
+_CODEX_DESKTOP_TABLES = (
+    ("local_thread_catalog", "thread_id"),
+    ("local_thread_catalog_scan_entries", "thread_id"),
+    ("thread_timeline_ledger", "thread_id"),
+    ("live_visualization_suggestions", "thread_id"),
+    ("inbox_items", "thread_id"),
+    ("automation_runs", "thread_id"),
+)
+
+
+def _purge_desktop_catalog(sid: str) -> str | None:
+    """把桌面应用会话目录里的"空壳"也清掉。返回出错原因(None = 清干净了)。
+
+    `codex delete` 只清 rollout 文件 / `state_*.sqlite` / `session_index.jsonl`,
+    **不碰桌面应用自己的 `codex-dev.db`** —— 于是侧边栏会一直挂着一个点不开的空壳
+    (实测:删掉的那条在 `local_thread_catalog` 里还留着 `display_title`)。
+    """
+    db = codex_desktop_db()
+    if db is None:
+        return None
+    try:
+        con = sqlite3.connect(db, timeout=5)  # 应用在跑,可能要等锁
+        try:
+            with con:
+                for table, col in _CODEX_DESKTOP_TABLES:
+                    cols = [r[1] for r in con.execute(f'pragma table_info("{table}")')]
+                    if col in cols:
+                        con.execute(f'delete from "{table}" where "{col}" = ?', (sid,))
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        return str(e)
+    return None
+
+
 def _discover_codex(include_archived: bool) -> list[Session]:
     d = codex_dir()
     cands: list[tuple[Path, bool]] = []
@@ -1200,7 +1247,11 @@ class CodexSource(Source):
         if r.returncode != 0:
             lines = [ln for ln in (r.stderr or r.stdout or "").strip().splitlines() if ln.strip()]
             raise RuntimeError(lines[-1] if lines else f"codex 退出码 {r.returncode}")
-        return "(已归档,codex unarchive 可取回)" if backup else "(codex 永久删除,不可恢复)"
+        if backup:
+            return "(已归档,codex unarchive 可取回)"
+        # codex delete 不清桌面应用的会话目录 —— 不补这一步,侧边栏会留个点不开的空壳
+        warn = _purge_desktop_catalog(s.sid)
+        return "(codex 永久删除,不可恢复)" + (f"  ⚠ 侧边栏空壳没清掉:{warn}" if warn else "")
 
     def set_title(self, s: Session, title: str):
         """改 Codex 的标题。
