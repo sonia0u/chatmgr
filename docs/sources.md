@@ -111,6 +111,10 @@ cgr list -S claude    # 不换命令名,用 -S 收窄(可逗号分隔 / 重复)
 10. **`codex doctor` 也报了两条 thread 问题**:`rollout files are missing from the state DB`(增量索引没吃完全部文件)和 `duplicate thread inventory entries found`(**就是 `session_index.jsonl` 里那 5 个重复 id**)。两条都印证了我们的读法:"取最后一行"是对的,索引与投影不是权威全集。
 11. **归档 / 删除 / 取回都实测通过,不需要 daemon**(2026-10-15 在一个一次性会话上走了完整往返):`codex archive` → 文件从 `sessions/<年>/<月>/<日>/` 挪进 `archived_sessions/`、状态库 `archived=1`、`cod list` 消失而 `cod list -a` 标 `[已归档]`;`codex unarchive` 完整还原。**`cod rm` 的路子是对的。**
     ⚠️ 但它走的是 Codex 自己的状态库,**手工造的、没登记进库的会话会被拒**(`failed to archive session`)—— 所以 `cod rm` 的成败依赖 Codex 自己的状态是否正常,不是我们能完全掌控的。失败时我们会明确报错并中止,不会删一半。
+12. **`codex delete` 会留下"空壳",得自己补一刀**(2026-10-16 实测)。它清掉了 rollout 文件、`state_*.sqlite.threads`、`session_index.jsonl`,但**不清桌面应用自己的 `~/.codex/sqlite/codex-dev.db`** —— 那张 `local_thread_catalog` 正是**侧边栏**列的东西(`display_title` / `cwd` / `source_kind`)。结果:会话删了,侧边栏还挂着一个点不开的空壳。
+    ⇒ `cod rm` 的直删现在会调 `_purge_desktop_catalog()` 按会话 id 清那几处挂行;**归档不清**(归档不是删除)。实测拿得到那个库的写锁(应用在跑也不影响)。
+    判断"空壳"要用**我们的发现逻辑**(能不能列出来),不能只看文件在不在:一个会话可能只剩 `guardian_review` 的子线程文件,文件在、会话却已经不算存在。
+    ⚠️ **不论改状态库还是桌面库,侧边栏都有内存缓存** —— 要重启 Codex 应用才看得见。
 
 ### OpenCode(未实现,**会话正文存哪仍未知**)
 

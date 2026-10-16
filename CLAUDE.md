@@ -43,6 +43,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `~/.codex/state_<N>.sqlite` | Codex 的**状态库**(`threads` / `thread_dynamic_tools` / …)。**标题的真身是 `threads.name`** —— `cod rename` 写这里,`codex archive <名字>` 也认这里。取最大版本号的那个文件 |
 | `~/.codex/session_index.jsonl` | 标题索引的**镜像**(`id → thread_name`),覆盖比状态库全,**但 Codex 不认它**。我们只在读标题时当兜底、改名时顺带补一条 |
 | `codex`(在 `$PATH` 上,如 `~/.local/bin/codex`) | Codex 独立版 CLI;`cod` 的删/改名/续聊要用它。找不到时回退到 app 包里自带的那份 `/Applications/ChatGPT.app/…/codex-cli/bin/codex` |
+| `~/.codex/sqlite/codex-dev.db` | **Codex 桌面应用自己的库**。侧边栏读的会话目录在 `local_thread_catalog`(`display_title` / `cwd` / `source_kind`)。**`codex delete` 不碰它** —— 不补一刀的话,会话删了、侧边栏还挂着一个点不开的空壳。`cod rm` 的直删会补(`_purge_desktop_catalog`) |
 | `~/.codex/thread_history_1.sqlite` | Codex 的 `thread_items` / `thread_turns` —— **建在 rollout jsonl 之上的增量索引**(存的是 byte offset),不是把 jsonl 搬走。**我们不用它**,但它说明格式在演进 |
 | `$CLAUDE_CONFIG_DIR` / `$CHATMGR_ARCHIVE_DIR` / `$CHATMGR_CODEX_DIR` / `$CHATMGR_CODEX_BIN` / `$CODEX_HOME` | 覆盖上面几个根目录与可执行文件。`$CODEX_HOME` 是 **Codex 自己的**变量,我们必须认(否则用户挪走数据后,我们读一处、删另一处);`$CHATMGR_*` 是我们测试用的,优先级更高 |
 
@@ -121,6 +122,9 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 - **标题的真身是 `~/.codex/state_<N>.sqlite` 的 `threads.name`,不是 `session_index.jsonl`。** 实测铁证:拿写进 jsonl 的名字去 `codex archive <名字>` → `No active session found matching`;拿状态库里的名字 → 找到并归档。而 `threads.name` 有 11 行是空的、jsonl 覆盖更全,所以**读的时候两边都读、状态库优先**(实测 43 个会话零冲突,改读法当天标题一个没变)。
   jsonl 仍是**追加**式的(同一 id 可能多行,取最后一行),里面也含 guardian_review 子线程的标题 —— 过滤得靠文件里的 `thread_source`。
 - **`codex doctor` 自己也报了 `duplicate thread inventory entries`** —— 就是 jsonl 里那几个重复 id,印证了"取最后一行"。
+- **删会话会留下"空壳",要自己补一刀**。`codex delete` 只清 rollout 文件 / `state_*.sqlite` / `session_index.jsonl`,**不清桌面应用的 `codex-dev.db.local_thread_catalog`** —— 那张表正是侧边栏列的东西,于是删完点开还会看到一个空壳(有 `display_title`、点进去没有内容)。实测就是这么来的。所以 `CodexSource.delete` 在直删后会调 `_purge_desktop_catalog()` 按会话 id 清那几处挂行;**归档不清**(归档不是删除)。
+  判断"空壳"要看**我们的发现逻辑能不能看到它**,不能只看文件在不在 —— 一个会话可能只剩 `guardian_review` 的子线程文件(那种本来就该忽略),文件在、会话却已经不算存在了。
+- **改完 Codex 侧的东西,应用侧边栏都可能有内存缓存**,需要重启应用才看得见 —— 不管改的是状态库还是桌面库。
 - **`cwd` 可能是 Windows 路径**(`E:\...`)。`Session.short_project` 走 `basename_any()`,同时认 `/` 和 `\` —— 直接用 `Path().name` 在 macOS 上会返回整串。
 - **文件里可能有被截断的坏行**(流式写入的残行)。沿用逐行 try/except。
 

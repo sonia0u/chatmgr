@@ -467,6 +467,8 @@ cgr rm <ref...> [--force] [全局参数]
 >
 > 那个 `--force` 是因为 **`codex delete` 自带一道确认**,而我们是以子进程调它的、没有终端,不给 `--force` 它就拒绝执行(报 `cannot confirm session deletion without an interactive terminal`)。**所以"确认"只剩我们自己的那道提示** —— 也正因如此,非 TTY 下我们绝不替你执行,只预览。
 >
+> 另外:**`codex delete` 自己不清 Codex 侧边栏的会话目录**(那是桌面应用自己的库 `codex-dev.db`),所以光删会话的话,侧边栏会一直挂着一个点不开的空壳。**我们已经替你补了这一刀** —— `rm` 直删时会顺手把那条目录记录也清掉。改完**要重启 Codex 应用**才看得见(侧边栏缓存在内存里)。
+>
 > 前提是本机能找到 `codex` 命令(路径上或 ChatGPT.app 包里)。找不到时只读功能照常,`rm` 会明确报错、不会删一半。
 
 **Codex 的归档不是"我们存的一份备份",是 Codex 自己的状态**,所以它和 Claude 那套 `~/claude-archive` 互不相干、各管各的。
