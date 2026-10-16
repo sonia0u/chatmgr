@@ -160,7 +160,7 @@ export CHATMGR_OPENCODE_BIN=/tmp/fake/oc-stub.sh  # 桩脚本;置空 = 当作"�
 - **改名两边机制不同,但都"写回原处"**:Claude 是往会话 jsonl 追加 `custom-title`;Codex 是 `UPDATE state_<N>.sqlite` 的 `threads.name`(**不是** `session_index.jsonl` —— 写那里 Codex 认不到,实测过;jsonl 只顺带补一条镜像);**OpenCode 是 `UPDATE session_v2.title`**(它没有改名命令)。**刻意不动 `updated_at` / `recency_at`**:那会把会话顶到侧边栏最前面,改个名字不该改变它的时间位置。
 - **OpenCode 的删 / 备份 / 续聊也走它自己的 CLI**:`opc rm` 的直删 = `opencode session delete <id>`(它**没有**交互确认参数,和 codex 不同),`n`(删并备份)= 先 `opencode session export` 存成 JSON 到 `<归档>/_opencode/` 再删(**这份能用 `opencode session import` 装回去**),`show -r` = `opencode --session <id>`。注意:`purge` 只扫 Claude 那套 `<归档>/<项目>/*.jsonl`,**管不到 `_opencode/`**,要清自己 rm。
 - **`purge` / `list -a` 不碰 `_dupes/`**:`dedupe` 挪走的重复副本是"刻意保留"的兜底,不算备份。归档扫描统一走 `archive_files()`(排除 `<归档>/_dupes/`),否则 `purge` 会把刻意留的副本一并清掉。要清副本自己 `rm -r <归档>/_dupes`。
-- **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
+- **不做成本估算**:作者自己的 Claude Code 走订阅制代理(不按 token 计费),没有"每 token 多少钱"这回事,算了是假数字。只报 token。
 
 ## 参数与输出约定
 
@@ -202,4 +202,4 @@ export CHATMGR_OPENCODE_BIN=/tmp/fake/oc-stub.sh  # 桩脚本;置空 = 当作"�
 ## 无关 / 历史
 
 - 仓库内**不含**用户的聊天数据。归档在 `~/claude-archive`(仓库外)。
-- `~/.claude/settings.json` 里的 `cleanupPeriodDays` 已设为 3650(防 Claude Code 自动清理记录),这属于用户环境、**不属于本仓库**。
+- `~/.claude/settings.json` 里的 `cleanupPeriodDays` 建议设得很大(防 Claude Code 自动清理记录),这属于用户环境、**不属于本仓库**。
