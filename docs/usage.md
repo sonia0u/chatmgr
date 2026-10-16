@@ -579,18 +579,17 @@ cgr rename 3                           # 不给标题 → 交互式输入
 
 | 命令 | 场景 |
 |---|---|
-| `cgr` | 看有哪些会话(**Claude + Codex 混排**) |
-| `cla` | 只想看 Claude(等价 `cgr -S claude`) |
-| `cod` | 只想看 Codex(等价 `cgr -S codex`) |
+| `cgr` | 看有哪些会话(**三个源分段列出**) |
+| `cla` / `cod` / `opc` | 只想看 Claude / Codex / OpenCode(等于 `cgr -S claude` 等) |
 | `cgr f` | 交互浏览,选中即打开 |
-| `cgr 词` | 找"上次在哪聊过某词" —— 两个 agent 一次搜遍 |
+| `cgr 词` | 找"上次在哪聊过某词" —— 三个 agent 一次搜遍 |
 | `cgr prompts 词` | 在**我问过的提问**里找(连 jsonl 已删的会话都能翻到;**只有 Claude 有**) |
 | `cgr 3` | 读第 3 个会话(混排列表的第 3 个) |
-| `cgr 3 -r` | 读完接着聊(自动用对 `claude` / `codex`) |
+| `cgr 3 -r` | 读完接着聊(自动用对 `claude` / `codex` / `opencode`) |
 | `cgr export 3 -o 对话.md` | 把第 3 个会话导出成文件 `对话.md` |
 | `cgr stats -b project` | 各项目用量 |
-| `cgr rename 3 新标题` | 给会话改名(`cgr f` 里按 `Ctrl-E` 也行;Codex 的改完它自己也看得见) |
+| `cgr rename 3 新标题` | 给会话改名(`cgr f` 里按 `Ctrl-E` 也行;Codex 的改完它自己也看得见,OpenCode 的**未验**) |
 | `cgr rm 3` | 预览删除(再按 y / n) |
 | `cgr rm 3 -f` | 直接删(不备份) |
 
-> 序号**只在你当前看到的那个列表里有意义**。`cgr 3` 和 `cla 3` 很可能是两个不同的会话 —— 拿不准就用 id 前缀。
+> 序号**只在你当前看到的那个列表里有意义**。`cgr 3`、`cla 3`、`cod 3`、`opc 3` 很可能是四个不同的会话 —— 拿不准就用 id 前缀。

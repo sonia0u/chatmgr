@@ -29,9 +29,10 @@ class Source:
 同一个 `chatmgr.py`,不同软链 → 默认管哪些源不同(busybox 那招,`SOURCES_BY_PROG`):
 
 ```
-cgr list              # 全部(Claude + Codex 混排;也接受 chatmgr)
+cgr list              # 全部,按源分段(Claude / Codex / OpenCode;也接受 chatmgr)
 cla list              # 只看 Claude
 cod list              # 只看 Codex
+opc list              # 只看 OpenCode
 cgr list -S claude    # 不换命令名,用 -S 收窄(可逗号分隔 / 重复)
 ```
 

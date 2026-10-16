@@ -33,7 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 路径 | 说明 |
 |---|---|
-| `~/.local/bin/cgr`(及 `chatmgr`、`cla`、`cod`) | 软链 → 仓库内 `chatmgr.py`,让命令可从任意目录运行;调用名决定默认管哪些源 |
+| `~/.local/bin/cgr`(及 `chatmgr`、`cla`、`cod`、`opc`) | 软链 → 仓库内 `chatmgr.py`,让命令可从任意目录运行;调用名决定默认管哪些源 |
 | `~/.claude/projects/<项目>/<会话id>.jsonl` | **Claude 数据源(只读)**;子 agent 在 `<会话id>/subagents/` |
 | `~/.claude/history.jsonl` | 用户的 prompt 流水(每条 prompt 一行);**`prompts` 子命令读取**,数据源与会话 jsonl 独立 |
 | `~/.claude/settings.json` | 环境配置,含 `cleanupPeriodDays`;**不属于本仓库** |

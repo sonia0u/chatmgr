@@ -1967,7 +1967,7 @@ def cmd_prompts(args, store: SessionStore):
     """
     if not store.has("claude"):
         print(f"{' / '.join(s.label for s in store.sources)} 没有「提问流水」这种东西 —— "
-              f"标题看它的标题索引,完整提问用 {prog_name()} list / {prog_name()} search。")
+              f"想找它的提问,用 {prog_name()} list / {prog_name()} search。")
         return
     if not history_file().is_file():
         die(f"找不到 {history_file()}(还没有提问流水)")
@@ -2476,19 +2476,30 @@ def cmd_rm(args, store: SessionStore):
 
     print(f"\n完成:{len(done)} 个会话已删除。")
     if backup:
-        if any(s.source == "codex" for s in targets):
-            print(paint("已归档进 Codex 自己的归档目录。要取回:codex unarchive <id>", "2", on))
-        else:
+        srcs = {s.source for s in targets}
+        if "claude" in srcs:
             print(paint(f"备份留在 {archive_dir()}(当保险)。要一次清掉全部备份:", "2", on))
             print(paint("  cgr purge -f", "2", on))
+        if "codex" in srcs:
+            print(paint("已归档进 Codex 自己的归档目录。要取回:codex unarchive <id>", "2", on))
+        if "opencode" in srcs:
+            print(paint(f"备份是导出的 JSON,在 {archive_dir() / '_opencode'}"
+                        f"(能 `opencode session import` 装回去)。`purge` 只管 Claude 那套,要清自己 rm。",
+                        "2", on))
     else:
         print(paint("⚠ 这次没备份,删了不可恢复。", "1;33", on))
 
 
 def cmd_purge(args, store: SessionStore):
     if not store.has("claude"):
-        print("Codex 的归档由它自己管(codex archive / delete),这里没有本工具存的备份可清。")
-        print("要取回已归档的会话:codex unarchive <id>")
+        # 这里只清 Claude 那套 <归档>/<项目>/*.jsonl。别把话说成"Codex 专用"——
+        # 选了别的源(或 opc)也会走到这里。
+        labels = " / ".join(s.label for s in store.sources)
+        print(f"{labels} 的备份不由本工具管 —— 这里没有可清的。")
+        if store.has("codex"):
+            print("Codex 的归档在它自己那边:`codex archive` / `codex unarchive <id>`。")
+        if store.has("opencode"):
+            print(f"OpenCode 的备份是导出的 JSON(在 {archive_dir() / '_opencode'}),要清自己 rm。")
         return
     ad = archive_dir()
     if not ad.is_dir():
@@ -2567,9 +2578,10 @@ def cmd_purge(args, store: SessionStore):
 def cmd_dedupe(args, store: SessionStore):
     """同一会话 id 有多个副本时,保留最新一份,其余移入归档(不删除)。"""
     if not store.has("claude"):
-        # 不是"不支持",是没这回事:Codex 一个会话横跨多个文件时,发现阶段已按
-        # session_id 归成一个会话,不存在重复副本。
-        print("Codex 无需去重:发现时已按 session_id 归组,同一会话不会出现两份。")
+        # 不是"不支持",是没这回事:Codex 的发现阶段已按 session_id 把多文件归成一个会话,
+        # OpenCode 更是一张表一个会话 —— 都不会出现"同一会话两份"。
+        labels = " / ".join(s.label for s in store.sources)
+        print(f"{labels} 不需要去重 —— 它们的会话在库里天然只有一份。")
         return
     alls = SessionStore(include_archived=args.archived, dedupe=False,
                         sources=[SOURCES["claude"]]).sessions()
