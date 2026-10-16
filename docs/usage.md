@@ -463,7 +463,9 @@ cgr rm <ref...> [--force] [全局参数]
 
 选 `n` 时:先备份成功 → 再删原件,备份失败立即中止、绝不删。选 `y` 或 `-f` 则**不备份**,删了不可恢复(会明确提示)。
 
-> **Codex 差异**:Codex 的删除/备份**用它自己的机制** —— `n`(删并备份)= `codex archive`(挪进它自己的归档目录,`cod list -a` 能看到 `[已归档]`,取回用 `codex unarchive <id>`),`y` / `-f`(直删)= `codex delete`。**不经过 `~/claude-archive`**,所以 `purge` 管不到它,你也不用管。
+> **Codex 差异**:Codex 的删除/备份**用它自己的机制** —— `n`(删并备份)= `codex archive`(挪进它自己的归档目录,`cod list -a` 能看到 `[已归档]`,取回用 `codex unarchive <id>`),`y` / `-f`(直删)= `codex delete --force`。**不经过 `~/claude-archive`**,所以 `purge` 管不到它,你也不用管。
+>
+> 那个 `--force` 是因为 **`codex delete` 自带一道确认**,而我们是以子进程调它的、没有终端,不给 `--force` 它就拒绝执行(报 `cannot confirm session deletion without an interactive terminal`)。**所以"确认"只剩我们自己的那道提示** —— 也正因如此,非 TTY 下我们绝不替你执行,只预览。
 >
 > 前提是本机能找到 `codex` 命令(路径上或 ChatGPT.app 包里)。找不到时只读功能照常,`rm` 会明确报错、不会删一半。
 

@@ -128,7 +128,8 @@ export CHATMGR_CODEX_BIN=/tmp/fake/codex-stub.sh  # 桩脚本;置空 = 当作"�
 - **破坏性操作默认只预览**:`rm` / `purge` / `dedupe` 不加 `--force` 只打印预览;**交互终端下再问一句**(`rm` 用 `_ask_delete()` 三选:y=直删、n=删并备份、其他=取消;`purge` / `dedupe` 用 `_confirm()`);**非 TTY 一律只预览、绝不执行**。这是安全底线,不要加"默认即执行"的开关,脚本里显式用 `--force`。
 - **删除:备份可选,直删要明示**:`rm` 交互下 `y` = 直接删(不备份)、`n` = 删并备份一份;脚本用 `-f` = 直接删(不备份)。走备份时先 `backup_session()` 成功再删原件,备份失败立即中止、绝不删;直删会明确提示"删了不可恢复"。
 - **归档 = 原样复制 jsonl**(可还原),不是转 markdown。markdown 属于 `export`,是另一条线。
-- **Codex 的删 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:`cod rm` 的 `n`(备份)= `codex archive`(挪进它自己的 `archived_sessions/`,`cod list -a` 看得到,`codex unarchive` 可取回),`y`/`-f`(直删)= `codex delete`,`show -r` = `codex resume <id>`。所以 `~/claude-archive` 和 manifest **完全不参与 Codex**。`cod purge` 因此是空操作(只说明一句)。
+- **Codex 的删 / 备份 / 续聊委托给 Codex 自己**,不另造轮子:`cod rm` 的 `n`(备份)= `codex archive`(挪进它自己的 `archived_sessions/`,`cod list -a` 看得到,`codex unarchive` 可取回),`y`/`-f`(直删)= **`codex delete --force`**,`show -r` = `codex resume <id>`。所以 `~/claude-archive` 和 manifest **完全不参与 Codex**。`cod purge` 因此是空操作(只说明一句)。
+  **那个 `--force` 是必须的**:`codex delete` 自带交互确认,而我们是以子进程调它、没有 TTY,不加就被拒(`cannot confirm session deletion without an interactive terminal`)。**因此"确认"这一步只剩我们自己的提示 —— 这恰恰是"非 TTY 只预览、绝不执行"这条底线比以前更要紧的原因。** `archive` 不需要 `--force`(安全操作,自己不拦)。
 - **改名两边机制不同,但都"写回原处"**:Claude 是往会话 jsonl 追加 `custom-title`;Codex 是 `UPDATE state_<N>.sqlite` 的 `threads.name`(**不是** `session_index.jsonl` —— 写那里 Codex 认不到,实测过;jsonl 只顺带补一条镜像)。**刻意不动 `updated_at` / `recency_at`**:那会把会话顶到 Codex 侧边栏最前面,改个名字不该改变它的时间位置。
 - **`purge` / `list -a` 不碰 `_dupes/`**:`dedupe` 挪走的重复副本是"刻意保留"的兜底,不算备份。归档扫描统一走 `archive_files()`(排除 `<归档>/_dupes/`),否则 `purge` 会把刻意留的副本一并清掉。要清副本自己 `rm -r <归档>/_dupes`。
 - **不做成本估算**:用户的 Claude Code 走 cline-pass 订阅代理(`ANTHROPIC_BASE_URL` 指向本地),没有"每 token 多少钱"这回事,算了是假数字。只报 token。

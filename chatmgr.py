@@ -1167,12 +1167,22 @@ class CodexSource(Source):
 
     def delete(self, s: Session, backup: bool) -> str:
         """backup=True → codex archive(挪进它自己的归档,可 unarchive 取回);
-        backup=False → codex delete(永久删)。"""
-        cmd = "archive" if backup else "delete"
-        r = subprocess.run([self._bin(), cmd, s.sid], capture_output=True, text=True)
+        backup=False → codex delete --force(永久删)。
+        """
+        b = self._bin()
+        if backup:
+            argv = [b, "archive", s.sid]  # archive 是安全操作,自己不问
+        else:
+            # codex delete **自带一道交互确认**,而我们是子进程、没有 TTY,不显式 --force
+            # 就会被它拒掉("cannot confirm session deletion without an interactive
+            # terminal")。用户也要求 --force 时 SESSION 必须是 UUID —— s.sid 就是。
+            # 敢加这个的前提是**我们自己已经问过了**(交互 `y`,或脚本给 `-f`);
+            # 非 TTY 时在 cmd_rm 里就返回了,根本走不到这里。
+            argv = [b, "delete", "--force", s.sid]
+        r = subprocess.run(argv, capture_output=True, text=True)
         if r.returncode != 0:
             lines = [ln for ln in (r.stderr or r.stdout or "").strip().splitlines() if ln.strip()]
-            raise RuntimeError(lines[-1] if lines else f"codex {cmd} 退出码 {r.returncode}")
+            raise RuntimeError(lines[-1] if lines else f"codex 退出码 {r.returncode}")
         return "(已归档,codex unarchive 可取回)" if backup else "(codex 永久删除,不可恢复)"
 
     def set_title(self, s: Session, title: str):

@@ -560,7 +560,8 @@ class CodexTest(BaseTest):
         self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
         code, out = self.run_cli("rm", "s1", "-f", "-S", "codex")
         self.assertEqual(code, 0)
-        self.assertEqual(self.called(), ["delete", "s1"])
+        # 必须带 --force:codex delete 自带交互确认,而我们是子进程没有 TTY
+        self.assertEqual(self.called(), ["delete", "--force", "s1"])
 
     def test_rm_backup_delegates_to_codex_archive(self):
         self.conv("a", [cmeta("s1"), citem("UserMessage", text="x")])
