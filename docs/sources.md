@@ -1,6 +1,6 @@
 # 多数据源
 
-> 本文件存放:**`cgr` 怎么支持 Claude Code 之外的 agent CLI 的聊天记录**。
+> 本文件存放:**`cgr` 怎么支持 Claude Code 之外的 AI Agent 的聊天记录**。
 > 现状:已实现 `claude` 与 `codex` 两个源;下面第三节是"再接一个新源要回答什么"的清单。
 > 产品范围与决策记在 `prd.md`。
 

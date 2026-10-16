@@ -1,6 +1,6 @@
 # 聊天记录命令手册
 
-`cgr`(=`chatmgr` / `cla` / `cod` / `opc`)—— 管理本机 agent 聊天记录的命令行工具。纯 Python 标准库,无依赖。管三个数据源:Claude Code、Codex、OpenCode。
+`cgr`(=`chatmgr` / `cla` / `cod` / `opc`)—— 管理本机几个 AI Agent 聊天记录的命令行工具。纯 Python 标准库,无依赖。管三个数据源:Claude Code、Codex、OpenCode。
 
 > **本文档统一用 `cgr` 举例。** `cla`(只看 Claude)、`cod`(只看 Codex)、`opc`(只看 OpenCode)敲法**完全一样**,只是看到的数据不同。凡是行为有差异的地方,各节里都用 **「Codex 差异」/「OpenCode 差异」** 标出来;两个非 Claude 源表现一样时就合并成 **「Codex / OpenCode 差异」**。
 

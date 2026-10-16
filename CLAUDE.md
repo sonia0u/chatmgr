@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-聊天记录管理 CLI,纯 Python 标准库、单文件、无依赖、无构建步骤。
+管理本机几个 AI Agent(Claude Code / Codex / OpenCode)聊天记录的 CLI。纯 Python 标准库、单文件、无依赖、无构建步骤。
 
 | 命令 | 管哪些源 | 数据 |
 |---|---|---|
@@ -194,6 +194,7 @@ export CHATMGR_OPENCODE_BIN=/tmp/fake/oc-stub.sh  # 桩脚本;置空 = 当作"�
 6. **保持纯标准库、单文件**;要引入第三方依赖先问。
 7. **⚠ 这个仓库是公开的**(`github.com/sonia0u/chatmgr`)。所以:**文档里的示例一律用占位名** —— `词` / `项目` / `示例项目` / `配置编辑器` 这类,别把**真实项目文件夹名、绝对路径、本机特有的环境变量、settings 里的具体数值**写进文档或代码注释。公开前已经整体洗过一轮,顺着这个习惯写就不会再攒出要清的东西。
    **推送**:用户说一声再推(推之前先看一眼 `git status` 和 `git log origin/main..HEAD`,确认推的是什么)。历史里保留着公开前的旧版本,不为它重写历史。
+8. **改 `cgr -h` 或手册开头时,两边都要跟** —— `_top_help()` 里那段「最常用的四个」和 `docs/usage.md` 开头那节讲的是同一件事(四个省动词的写法 + 全局参数)。只改一边,另一处立刻就过时了。
 
 ## 文档约定
 
