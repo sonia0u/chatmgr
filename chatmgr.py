@@ -414,6 +414,15 @@ class Session:
         return self.tokens["input"] + self.tokens["output"]
 
 
+def skey(s: Session) -> tuple[str, str]:
+    """会话的全局标识:`(源, 会话 id)`。
+
+    序号索引按它来 —— **不能按文件路径**:OpenCode 一个库里装着所有会话,路径会是
+    同一个,按路径编号会全撞在一起。
+    """
+    return (s.source, s.sid)
+
+
 def session_files(s: Session) -> tuple[Path, ...]:
     """该会话对应的文件。Codex 一个会话可能横跨多个文件(续写/分叉)。"""
     return s.paths or (s.path,)
@@ -471,7 +480,7 @@ def _tool_summary(x: dict) -> str:
     inp = x.get("input")
     if not isinstance(inp, dict):
         return f"{name}(…)"
-    for k in ("command", "file_path", "path", "pattern", "query", "url", "prompt"):
+    for k in ("command", "file_path", "filePath", "path", "pattern", "query", "url", "prompt"):
         if k in inp:
             v = " ".join(str(inp[k]).split())
             return f"{name}({k}={truncate(v, 80)})"
@@ -600,8 +609,8 @@ class SessionStore:
             uniq.append(s)
         return uniq
 
-    def index_map(self) -> dict[str, int]:
-        return {str(s.path): i for i, s in enumerate(self.sessions(), 1)}
+    def index_map(self) -> dict[tuple[str, str], int]:
+        return {skey(s): i for i, s in enumerate(self.sessions(), 1)}
 
 
 # ---------------------------------------------------------------- 筛选 / 指认
@@ -633,7 +642,7 @@ def apply_filters(sessions: list[Session], args) -> list[Session]:
 def _candidates(sessions: list[Session], idx: dict[str, int]) -> str:
     lines = []
     for s in sessions[:15]:
-        lines.append(f"  [{idx.get(str(s.path), '?')}] {s.title}  ({s.sid[:8]})")
+        lines.append(f"  [{idx.get(skey(s), '?')}] {s.title}  ({s.sid[:8]})")
     if len(sessions) > 15:
         lines.append(f"  … 还有 {len(sessions) - 15} 个")
     return "\n".join(lines)
@@ -1076,6 +1085,239 @@ def _discover_codex(include_archived: bool) -> list[Session]:
     return out
 
 
+# ---------------------------------------------------------------- OpenCode 解析层
+#
+# OpenCode v2 是**服务架构**(后台跑一个本地 HTTP 服务,CLI/TUI 只是客户端),数据落在
+# SQLite:`<data>/opencode.db`(它自己 `opencode debug paths` 报的)。结构比 Claude / Codex
+# 都规整 —— 一张表一个会话、一张表一条消息:
+#
+#   session_v2      id / parent_id / directory(项目) / title / model
+#                   / time_created·time_updated / time_archived
+#                   / tokens_input·output·reasoning·cache_read·cache_write
+#   session_message session_id / type / seq / data(JSON)
+#
+# 消息类型(实测):
+#   user            {time, text, files, agents}
+#   assistant       {time, agent, model, content[], finish, tokens{...}}
+#   idle            {time, outcome}              —— 跳过
+#   model-switched  {time, model, previous}      —— 跳过
+#
+# assistant.content[] 的 part(实测):
+#   {"type": "text",      "text": …}
+#   {"type": "reasoning", "text": …}
+#   {"type": "tool", "name": …, "state": {"input": {…},
+#                                         "content": [{"type": "text", "text": …}]}}
+#   —— tool 的 state.content 就是"工具返回",和 Claude 的 tool_use/tool_result 一一对应
+#
+# token 口径:**input 不含缓存**,和 Claude 一样(不是 Codex 那种)。
+# 这个不是猜的 —— 拿它自己的 `opencode stats` 对过账:它报 "5.8k",
+# 正好等于 message 级 input+output+reasoning+cache.read;若 input 含缓存,那个数会是 6.4k。
+
+
+def opencode_dir() -> Path:
+    """OpenCode 的数据根目录(`opencode debug paths` 里那个 data)。"""
+    env = os.environ.get("CHATMGR_OPENCODE_DIR")
+    if env:
+        return Path(env)
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return Path(xdg) / "opencode" if xdg else (Path.home() / ".local" / "share" / "opencode")
+
+
+def opencode_db() -> Path:
+    return opencode_dir() / "opencode.db"
+
+
+def opencode_bin() -> str | None:
+    env = os.environ.get("CHATMGR_OPENCODE_BIN")
+    if env is not None:
+        return env or None  # 置空 = 明确当作"没装"
+    return shutil.which("opencode")
+
+
+def _opencode_conn(write: bool = False):
+    """连库。库不存在或开不了就返回 None(它可能还没用过 —— 别当成错误)。"""
+    db = opencode_db()
+    if not db.is_file():
+        return None
+    try:
+        con = sqlite3.connect(db, timeout=5) if write else sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        return con
+    except sqlite3.Error:
+        return None
+
+
+def _opencode_add_usage(acc: dict, tk: dict):
+    """input / cache 是**各自独立**的桶(见本节开头:拿 stats 对过账),直接累加。"""
+    acc["input"] += tk.get("input") or 0
+    acc["output"] += tk.get("output") or 0
+    acc["thinking"] += tk.get("reasoning") or 0
+    cache = tk.get("cache") or {}
+    acc["cache_read"] += cache.get("read") or 0
+    acc["cache_creation"] += cache.get("write") or 0
+
+
+def _opencode_tool_summary(p: dict) -> str:
+    return _tool_summary({"name": p.get("name"), "input": (p.get("state") or {}).get("input")})
+
+
+def _opencode_tool_result(p: dict) -> str:
+    out = []
+    for c in ((p.get("state") or {}).get("content") or []):
+        if isinstance(c, dict) and c.get("type") == "text" and (c.get("text") or "").strip():
+            out.append(c["text"])
+    return "\n".join(out)
+
+
+def _opencode_msgs(s: Session):
+    """按 seq 产出该会话的 (type, data)。"""
+    con = _opencode_conn()
+    if con is None:
+        return
+    try:
+        for r in con.execute(
+                "select type, data from session_message where session_id = ? order by seq", (s.sid,)):
+            try:
+                d = json.loads(r["data"] or "{}")
+            except Exception:
+                continue
+            if isinstance(d, dict):
+                yield r["type"], d
+    finally:
+        con.close()
+
+
+def _opencode_parts(d: dict):
+    for p in (d.get("content") or []):
+        if isinstance(p, dict):
+            yield p
+
+
+def _opencode_events(s: Session, full: bool = False):
+    for t, d in _opencode_msgs(s):
+        if t == "user":
+            txt = flat(d.get("text") or "")
+            if txt:
+                yield ("user", txt)
+        elif t == "assistant":
+            for p in _opencode_parts(d):
+                pt = p.get("type")
+                if pt == "text" and (p.get("text") or "").strip():
+                    yield ("assistant", p["text"])
+                elif pt == "tool":
+                    yield ("tool", _opencode_tool_summary(p))
+                    if full:
+                        res = _opencode_tool_result(p)
+                        if res:
+                            yield ("tool_result", res)
+                elif pt == "reasoning" and full and (p.get("text") or "").strip():
+                    yield ("thinking", p["text"])
+
+
+def _opencode_units(s: Session, include_all: bool = False, role: str | None = None):
+    """与 Claude 对齐:默认 user 提问 + assistant 正文 + 工具调用;`--all` 才加思考/工具返回。"""
+    for t, d in _opencode_msgs(s):
+        if t == "user":
+            if role and role != "user":
+                continue
+            txt = flat(d.get("text") or "")
+            if txt:
+                yield ("user", txt)
+        elif t == "assistant":
+            if role and role != "assistant":
+                continue
+            for p in _opencode_parts(d):
+                pt = p.get("type")
+                if pt == "text" and (p.get("text") or "").strip():
+                    yield ("assistant", p["text"])
+                elif pt == "tool":
+                    st = (p.get("state") or {}).get("input") or {}
+                    yield ("tool", f"{p.get('name')} {json.dumps(st, ensure_ascii=False)}")
+                    if include_all:
+                        res = _opencode_tool_result(p)
+                        if res:
+                            yield ("tool_result", res)
+                elif pt == "reasoning" and include_all and (p.get("text") or "").strip():
+                    yield ("thinking", p["text"])
+
+
+def _opencode_load(include_archived: bool) -> list[Session]:
+    con = _opencode_conn()
+    if con is None:
+        return []
+    out: list[Session] = []
+    try:
+        srows = {r["id"]: dict(r) for r in con.execute("select * from session_v2")}
+        agg = {sid: {"prompts": 0, "replies": 0, "first": "", "size": 0, "has_usage": False,
+                     "tokens": empty_tokens(), "tools": Counter(), "models": Counter()}
+               for sid in srows}
+        for r in con.execute("select session_id, type, data from session_message order by session_id, seq"):
+            a = agg.get(r["session_id"])
+            if a is None:
+                continue
+            raw = r["data"] or ""
+            a["size"] += len(raw.encode("utf-8", "ignore"))  # 该会话的消息数据量(库里没有单会话字节数)
+            try:
+                d = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(d, dict):
+                continue
+            if r["type"] == "user":
+                txt = flat(d.get("text") or "")
+                if txt:
+                    a["prompts"] += 1
+                    if not a["first"]:
+                        a["first"] = txt
+            elif r["type"] == "assistant":
+                tk = d.get("tokens")
+                if isinstance(tk, dict) and tk:
+                    _opencode_add_usage(a["tokens"], tk)
+                    a["has_usage"] = True
+                for p in _opencode_parts(d):
+                    if p.get("type") == "text" and (p.get("text") or "").strip():
+                        a["replies"] += 1
+                    elif p.get("type") == "tool" and p.get("name"):
+                        a["tools"][p["name"]] += 1
+                m = d.get("model")
+                if isinstance(m, dict) and m.get("id"):
+                    a["models"][m["id"]] += 1
+    finally:
+        con.close()
+
+    for sid, row in srows.items():
+        archived = bool(row.get("time_archived"))
+        if archived and not include_archived:
+            continue
+        a = agg[sid]
+        s = Session(sid=sid, path=opencode_db(), archived=archived, source="opencode")
+        s.project = flat(row.get("directory") or "")
+        s.size = a["size"]
+        s.prompts, s.replies = a["prompts"], a["replies"]
+        s.first_prompt = a["first"]
+        s.tokens, s.has_usage = a["tokens"], a["has_usage"]
+        s.tools, s.models = a["tools"], a["models"]
+        s.start = parse_ts(row.get("time_created"))
+        s.end = parse_ts(row.get("time_updated")) or s.start
+        name = flat(row.get("title") or "")
+        s.title_explicit = bool(name)
+        s.title = name or (truncate(s.first_prompt, 60) if s.first_prompt else "(无标题)")
+        out.append(s)
+    return out
+
+
+def _opencode_daily_usage(s: Session):
+    for t, d in _opencode_msgs(s):
+        ts = parse_ts((d.get("time") or {}).get("created"))
+        if not ts:
+            continue
+        if t == "assistant" and isinstance(d.get("tokens"), dict):
+            tk = d["tokens"]
+            yield ts.date(), (tk.get("input") or 0), (tk.get("output") or 0)
+        else:
+            yield ts.date(), 0, 0
+
+
 # ---------------------------------------------------------------- 数据源
 #
 # 每个源负责:发现文件 → 归一化成 Session;按时间产出 (kind, text);以及写操作。
@@ -1296,7 +1538,88 @@ class CodexSource(Source):
         return b
 
 
-SOURCES: dict[str, Source] = {s.key: s for s in (ClaudeSource(), CodexSource())}
+class OpenCodeSource(Source):
+    """OpenCode v2:所有会话在**同一个 SQLite** 里(`<data>/opencode.db`)。
+
+    写操作走它自己的 CLI(`opencode session delete` / `export` —— 经后台服务执行,
+    服务没跑时会自动拉起)。它**没有**改名命令,所以改名直接 `UPDATE session_v2.title`。
+    """
+
+    key = "opencode"
+    label = "OpenCode"
+
+    def root(self) -> Path:
+        return opencode_dir()
+
+    def missing_hint(self) -> str:
+        return f"找不到 {opencode_db()}(OpenCode 还没用过?)"
+
+    def discover(self, include_archived: bool) -> list[Session]:
+        return _opencode_load(include_archived)
+
+    def events(self, s: Session, full: bool = False):
+        return _opencode_events(s, full=full)
+
+    def units(self, s: Session, include_all: bool = False, role: str | None = None):
+        return _opencode_units(s, include_all=include_all, role=role)
+
+    def daily_usage(self, s: Session):
+        return _opencode_daily_usage(s)
+
+    def resume_argv(self, s: Session) -> list[str] | None:
+        b = opencode_bin()
+        return [b, "--session", s.sid] if b else None
+
+    def delete(self, s: Session, backup: bool) -> str:
+        b = self._bin()
+        dest = self._export(s, b) if backup else None  # 先导出成功再删;失败即抛,不会删
+        r = subprocess.run([b, "session", "delete", s.sid], capture_output=True, text=True)
+        if r.returncode != 0:
+            lines = [ln for ln in (r.stderr or r.stdout or "").strip().splitlines() if ln.strip()]
+            raise RuntimeError(lines[-1] if lines else f"opencode 退出码 {r.returncode}")
+        return f"(已导出备份 → {dest})" if dest else "(opencode 永久删除,不可恢复)"
+
+    def _export(self, s: Session, b: str) -> Path:
+        """`n`(删并备份)。OpenCode 没有归档概念,所以导出成 JSON 存到 `<归档>/_opencode/`
+        —— 这份能直接用 `opencode session import` 装回去,比复制文件更靠谱。
+
+        注意:`purge` 只扫 Claude 那套 `<归档>/<项目>/*.jsonl`,**管不到这里**;
+        要清自己 rm -r。
+        """
+        r = subprocess.run([b, "session", "export", s.sid], capture_output=True, text=True)
+        if r.returncode != 0 or not (r.stdout or "").strip():
+            raise RuntimeError(f"导出失败,已中止(不会删):{(r.stderr or '').strip()[:200]}")
+        d = archive_dir() / "_opencode"
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / f"{_safe_name(s.sid)}.json"
+        dest.write_text(r.stdout, encoding="utf-8")
+        return dest
+
+    def set_title(self, s: Session, title: str):
+        """改 `session_v2.title`。**没实跑验证过应用认不认** —— 和 Codex 不同,这台机器上
+        OpenCode 才刚用起来,没有可对照的样本。改不动就退回"自己的覆盖层"。
+        """
+        con = _opencode_conn(write=True)
+        if con is None:
+            raise RuntimeError(f"连不上 {opencode_db()}")
+        try:
+            with con:
+                n = con.execute("update session_v2 set title = ? where id = ?", (title, s.sid)).rowcount
+        except sqlite3.Error as e:
+            raise RuntimeError(f"写 {opencode_db()} 失败:{e}") from e
+        finally:
+            con.close()
+        if not n:
+            raise RuntimeError(f"库里没有这个会话:{s.sid}")
+
+    def _bin(self) -> str:
+        b = opencode_bin()
+        if not b:
+            die("找不到 opencode 命令 —— 删 / 续聊要用它(只读记录不需要)")
+        return b
+
+
+SOURCES: dict[str, Source] = {s.key: s for s in (ClaudeSource(), CodexSource(), OpenCodeSource())}
 ALL_SOURCES = list(SOURCES)
 
 #: 靠"自己被叫什么名字"决定默认管**哪些**源(busybox 那招)。
@@ -1311,6 +1634,7 @@ SOURCES_BY_PROG = {
     "chatmgr.py": ALL_SOURCES,
     "cla": ["claude"],
     "cod": ["codex"],
+    "opc": ["opencode"],
 }
 
 
@@ -1357,7 +1681,7 @@ def _src(s: Session) -> Source:
 
 
 #: 来源在列表里的颜色(和 show 里的 [Claude] / [Codex] 标签呼应;也是段标题的颜色)
-SOURCE_COLORS = {"claude": "1;34", "codex": "1;35"}
+SOURCE_COLORS = {"claude": "1;34", "codex": "1;35", "opencode": "1;36"}
 
 
 def mixed(sessions) -> bool:
@@ -1601,7 +1925,7 @@ def cmd_list(args, store: SessionStore):
     def row(s: Session) -> list[str]:
         title = s.title + ("  [已归档]" if s.archived else "")
         return [
-            paint(str(idx.get(str(s.path), "?")), "1;33", on),  # 序号高亮,便于复制去 show/rm
+            paint(str(idx.get(skey(s), "?")), "1;33", on),  # 序号高亮,便于复制去 show/rm
             fmt_time(s.end or s.start),
             paint(truncate(s.short_project, 22), pcolors.get(s.short_project, "36"), on),
             truncate(title, 34),
@@ -1780,7 +2104,7 @@ def cmd_search(args, store: SessionStore):
         return
 
     def sidx(s: Session) -> str:
-        return idx.get(str(s.path), "?")
+        return idx.get(skey(s), "?")
 
     mixed_hits = mixed([s for s in title_hits] + [s for s, _, _ in content_hits])
 
@@ -1910,7 +2234,7 @@ def session_lines(store: SessionStore, sessions: list[Session]) -> list[str]:
                 paint(fmt_time(s.end or s.start), "2", on),  # 时间往后放
             ]
         )
-        lines.append(display + "\t" + str(idx.get(str(s.path), "?")))
+        lines.append(display + "\t" + str(idx.get(skey(s), "?")))
     return lines
 
 

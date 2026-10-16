@@ -83,16 +83,21 @@ class BaseTest(unittest.TestCase):
         self.config = root / "config"
         self.archive = root / "archive"
         self.codex_home = root / "codex"  # 空目录:cgr 默认是"全部源",别去读真实的 ~/.codex
+        self.opencode_home = root / "opencode"  # 同理,别去碰真实的 opencode.db
         (self.config / "projects").mkdir(parents=True)
         self.archive.mkdir(parents=True)
         self.codex_home.mkdir(parents=True)
+        self.opencode_home.mkdir(parents=True)
         self._env = {k: os.environ.get(k) for k in
                      ("CLAUDE_CONFIG_DIR", "CHATMGR_ARCHIVE_DIR", "NO_COLOR",
-                      "CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN", "CODEX_HOME")}
+                      "CHATMGR_CODEX_DIR", "CHATMGR_CODEX_BIN", "CODEX_HOME",
+                      "CHATMGR_OPENCODE_DIR", "CHATMGR_OPENCODE_BIN")}
         os.environ["CLAUDE_CONFIG_DIR"] = str(self.config)
         os.environ["CHATMGR_ARCHIVE_DIR"] = str(self.archive)
         os.environ["CHATMGR_CODEX_DIR"] = str(self.codex_home)
         os.environ["CHATMGR_CODEX_BIN"] = ""  # 当作"没装 codex",免得测试真去调它
+        os.environ["CHATMGR_OPENCODE_DIR"] = str(self.opencode_home)
+        os.environ["CHATMGR_OPENCODE_BIN"] = ""
         os.environ.pop("CODEX_HOME", None)
         os.environ["NO_COLOR"] = "1"  # 输出里不带颜色码,断言好写
         chatmgr._COLOR_MODE = None
@@ -725,11 +730,13 @@ class CodexTest(BaseTest):
             self.assertEqual(chatmgr.default_source_keys(), ["codex"])
             sys.argv[0] = "cla"
             self.assertEqual(chatmgr.default_source_keys(), ["claude"])
+            sys.argv[0] = "opc"
+            self.assertEqual(chatmgr.default_source_keys(), ["opencode"])
             sys.argv[0] = "cgr"
-            self.assertEqual(chatmgr.default_source_keys(), ["claude", "codex"],
+            self.assertEqual(chatmgr.default_source_keys(), ["claude", "codex", "opencode"],
                              "cgr 是「全部」—— 一次搜遍所有 agent 才是它的初衷")
             sys.argv[0] = "/some/where/chatmgr.py"  # picker 自己调自己时的 argv[0]
-            self.assertEqual(chatmgr.default_source_keys(), ["claude", "codex"])
+            self.assertEqual(chatmgr.default_source_keys(), ["claude", "codex", "opencode"])
         finally:
             sys.argv[0] = old
 
@@ -741,6 +748,208 @@ class CodexTest(BaseTest):
         self.assertEqual(chatmgr.selected_source_keys(a), ["claude"])
         a.source = ["codex,claude", "codex"]  # 逗号 + 重复,去重且保持顺序
         self.assertEqual(chatmgr.selected_source_keys(a), ["codex", "claude"])
+
+
+# ---------------------------------------------------------------- OpenCode 数据源
+
+
+def otext(t):
+    return {"type": "text", "text": t}
+
+
+def oreason(t):
+    return {"type": "reasoning", "text": t}
+
+
+def otool(name, inp, result=None):
+    return {"type": "tool", "name": name, "state": {
+        "status": "completed", "input": inp,
+        "content": ([{"type": "text", "text": result}] if result else [])}}
+
+
+def ouser(text, ts=1792143313072):
+    return {"time": {"created": ts}, "text": text, "files": [], "agents": []}
+
+
+def oassistant(parts, *, tokens=None, ts=1792143313082, model="m1"):
+    return {"time": {"created": ts, "completed": ts + 1500}, "agent": "build",
+            "model": {"id": model}, "content": parts, "finish": "stop", "tokens": tokens or {}}
+
+
+class OpenCodeTest(BaseTest):
+    """OpenCode 源。库是真的 SQLite(在临时目录),但删/导出走桩脚本 —— 绝不真跑 opencode。"""
+
+    def setUp(self):
+        super().setUp()
+        self.oc = self.opencode_home  # 基类已建好并指向它
+        self.calls = self.tmp_root / "oc-calls.log"
+        stub = self.tmp_root / "opencode-stub.sh"
+        stub.write_text(
+            f'#!/bin/sh\necho "$@" >> "{self.calls}"\n'
+            'if [ "$1" = "session" ] && [ "$2" = "export" ]; then echo \'{"ok":true}\'; fi\n'
+            'exit 0\n', encoding="utf-8")
+        stub.chmod(0o755)
+        os.environ["CHATMGR_OPENCODE_BIN"] = str(stub)
+        self.db = self.oc / "opencode.db"
+        con = sqlite3.connect(self.db)
+        con.execute("""create table session_v2 (id text primary key, parent_id text,
+            directory text, title text, time_created integer, time_updated integer,
+            time_archived integer, tokens_input integer, tokens_output integer,
+            tokens_reasoning integer, tokens_cache_read integer, tokens_cache_write integer)""")
+        con.execute("""create table session_message (id text, session_id text, type text,
+            seq integer, time_created integer, data text)""")
+        con.commit()
+        con.close()
+
+    def sess(self, sid, *, directory="/Users/me/proj", title=None, archived=None,
+             created=1792143313038, updated=1792143334684):
+        con = sqlite3.connect(self.db)
+        with con:
+            con.execute("insert or replace into session_v2 values (?,?,?,?,?,?,?,0,0,0,0,0)",
+                        (sid, None, directory, title, created, updated, archived))
+        con.close()
+
+    def msgs(self, sid, rows):
+        con = sqlite3.connect(self.db)
+        with con:
+            for i, (typ, data) in enumerate(rows):
+                con.execute("insert into session_message values (?,?,?,?,?,?)",
+                            (f"msg{i}", sid, typ, i + 1, 1792143313000 + i,
+                             json.dumps(data, ensure_ascii=False)))
+        con.close()
+
+    def called(self):
+        return self.calls.read_text(encoding="utf-8").split() if self.calls.exists() else []
+
+    def sessions(self, archived=False):
+        return chatmgr.SessionStore(
+            include_archived=archived, sources=[chatmgr.SOURCES["opencode"]]).sessions()
+
+    def one(self, sid, rows, **kw):
+        self.sess(sid, **kw)
+        self.msgs(sid, rows)
+        return self.sessions()[0]
+
+    # ---- 发现 / 标题 / 用量
+
+    def test_title_from_column_then_first_prompt(self):
+        self.sess("s1", title="库里的标题")
+        self.msgs("s1", [("user", ouser("首句提问")), ("assistant", oassistant([otext("回答")]))])
+        self.sess("s2")
+        self.msgs("s2", [("user", ouser("没有标题时用首句"))])
+        got = {s.sid: s for s in self.sessions()}
+        self.assertEqual(got["s1"].title, "库里的标题")
+        self.assertEqual(got["s2"].title, "没有标题时用首句", "title 为空要回退到首句")
+
+    def test_aggregates_and_token_mapping(self):
+        s = self.one("s1", [
+            ("user", ouser("问题一")),
+            ("assistant", oassistant([oreason("想想"), otext("回答一"), otool("bash", {"command": "ls"}, "out")],
+                                     tokens={"input": 1000, "output": 50, "reasoning": 20,
+                                             "cache": {"read": 900, "write": 0}}),
+            ),
+            ("idle", {"time": {"created": 1}, "outcome": "succeeded"}),
+            ("user", ouser("问题二")),
+        ])
+        self.assertEqual((s.prompts, s.replies), (2, 1))
+        self.assertEqual(s.first_prompt, "问题一")
+        self.assertEqual(s.tools["bash"], 1)
+        self.assertEqual(s.tokens["input"], 1000, "OpenCode 的 input **不含**缓存,直接用(拿 stats 对过账)")
+        self.assertEqual(s.tokens["cache_read"], 900)
+        self.assertEqual(s.tokens["thinking"], 20)
+        self.assertEqual(s.tok_io, 1050)
+        self.assertTrue(s.has_usage)
+
+    def test_session_without_usage_flagged(self):
+        s = self.one("s1", [("user", ouser("没跑成功的对话"))])
+        self.assertFalse(s.has_usage, "失败/没产出的会话要能区分于『真的是 0』")
+
+    def test_archived_only_with_flag(self):
+        self.sess("s1")
+        self.msgs("s1", [("user", ouser("活的"))])
+        self.sess("s2", archived=1792143000000)
+        self.msgs("s2", [("user", ouser("归档的"))])
+        self.assertEqual([s.sid for s in self.sessions()], ["s1"])
+        self.assertEqual(sorted(s.sid for s in self.sessions(archived=True)), ["s1", "s2"])
+
+    # ---- 事件流
+
+    def test_events_map_to_kinds(self):
+        s = self.one("s1", [
+            ("user", ouser("我问的")),
+            ("assistant", oassistant([
+                oreason("想了下"),
+                otext("它答的"),
+                otool("websearch", {"query": "查一下"}, "搜索结果正文"),
+            ])),
+            ("model-switched", {"time": {"created": 1}, "model": {"id": "m2"}}),
+        ])
+        kinds = [k for k, _ in chatmgr.iter_events(s)]
+        self.assertEqual(kinds, ["user", "assistant", "tool"], "idle / model-switched 要跳过;默认不出 thinking")
+        _, tool_text = [e for e in chatmgr.iter_events(s) if e[0] == "tool"][0]
+        self.assertIn("websearch", tool_text)
+        self.assertIn("query=查一下", tool_text)
+        full = [k for k, _ in chatmgr.iter_events(s, full=True)]
+        self.assertIn("thinking", full)
+        self.assertIn("tool_result", full, "--full 才出工具返回")
+
+    # ---- 写操作
+
+    def test_rm_delegates_to_opencode_delete(self):
+        self.sess("s1")
+        self.msgs("s1", [("user", ouser("x"))])
+        code, out = self.run_cli("rm", "s1", "-f", "-S", "opencode")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.called(), ["session", "delete", "s1"])
+
+    def test_rm_noninteractive_never_calls_opencode(self):
+        self.sess("s1")
+        self.msgs("s1", [("user", ouser("x"))])
+        code, out = self.run_cli("rm", "s1", "-S", "opencode")
+        self.assertIn("非交互终端", out)
+        self.assertEqual(self.called(), [], "非 TTY 只预览,连 opencode 都不能调")
+
+    def test_rm_backup_exports_before_deleting(self):
+        self.sess("s1")
+        self.msgs("s1", [("user", ouser("x"))])
+        note = chatmgr.SOURCES["opencode"].delete(self.sessions()[0], backup=True)
+        self.assertEqual(self.called(),
+                         ["session", "export", "s1", "session", "delete", "s1"],
+                         "先导出、再删")
+        self.assertIn("导出备份", note)
+
+    def test_rename_writes_session_title(self):
+        self.sess("s1", title="旧标题")
+        self.msgs("s1", [("user", ouser("x"))])
+        code, out = self.run_cli("rename", "s1", "我改的", "-S", "opencode")
+        self.assertEqual(code, 0)
+        con = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True)
+        self.assertEqual(con.execute("select title from session_v2 where id='s1'").fetchone()[0], "我改的")
+        con.close()
+        self.assertEqual(self.sessions()[0].title, "我改的")
+
+    def test_resume_argv(self):
+        self.sess("s1")
+        self.msgs("s1", [("user", ouser("x"))])
+        argv = chatmgr.SOURCES["opencode"].resume_argv(self.sessions()[0])
+        self.assertEqual(argv[1:], ["--session", "s1"])
+
+    def test_missing_binary_reads_fine_writes_fail(self):
+        self.sess("s1")
+        self.msgs("s1", [("user", ouser("读我"))])
+        os.environ["CHATMGR_OPENCODE_BIN"] = ""
+        self.assertIsNone(chatmgr.opencode_bin())
+        self.assertIn("1 个会话", self.run_cli("list", "-S", "opencode")[1])
+        code, out = self.run_cli("rm", "s1", "-f", "-S", "opencode")
+        self.assertNotEqual(code, 0)
+        self.assertIn("找不到 opencode 命令", out)
+
+    def test_missing_db_is_not_an_error(self):
+        """没装/没用过 OpenCode 时,不该报错、也不该拖累 cgr。"""
+        self.db.unlink()
+        self.assertEqual(self.sessions(), [])
+        code, out = self.run_cli("list", "-S", "opencode")
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":
